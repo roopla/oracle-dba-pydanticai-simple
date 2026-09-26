@@ -1,0 +1,87 @@
+/* Chainlit custom styling - alert-aware Monitor link.
+ *
+ * Save as public/custom.css and enable in .chainlit/config.toml:
+ *     [UI]
+ *     custom_css = "/public/custom.css"
+ *     custom_js  = "/public/custom.js"
+ *
+ * custom.js adds one of these classes to the link every 30 seconds:
+ *   .mon-clear     - nothing unacknowledged
+ *   .mon-warning   - unacknowledged warnings
+ *   .mon-critical  - unacknowledged criticals
+ * No class at all means the monitor could not be reached.
+ */
+
+/* Base: quiet, unobtrusive pill. Matches dashboard.html's palette. */
+a[href="/monitor/"] {
+  position: relative !important;
+  color: #6f9080 !important;
+  font-weight: 600 !important;
+  padding: 4px 12px !important;
+  border: 1px solid transparent !important;
+  border-radius: 4px !important;
+  letter-spacing: 0.04em;
+  transition: color 0.25s ease, border-color 0.25s ease,
+    background 0.25s ease, box-shadow 0.25s ease;
+}
+
+a[href="/monitor/"]:hover {
+  background: rgba(111, 144, 128, 0.12) !important;
+}
+
+/* All clear - stays calm so the alert states actually stand out. */
+a[href="/monitor/"].mon-clear {
+  color: #3ecf8e !important;
+  border-color: rgba(62, 207, 142, 0.35) !important;
+}
+
+/* Warnings - amber, steady. Noticeable but not urgent. */
+a[href="/monitor/"].mon-warning {
+  color: #e0a536 !important;
+  border-color: #e0a536 !important;
+  background: rgba(224, 165, 54, 0.1) !important;
+}
+
+/* Criticals - red, pulsing. This is the state worth interrupting for. */
+a[href="/monitor/"].mon-critical {
+  color: #e0524a !important;
+  border-color: #e0524a !important;
+  background: rgba(224, 82, 74, 0.12) !important;
+  animation: mon-pulse 1.8s ease-in-out infinite;
+}
+
+@keyframes mon-pulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 rgba(224, 82, 74, 0);
+  }
+  50% {
+    box-shadow: 0 0 14px rgba(224, 82, 74, 0.75);
+  }
+}
+
+/* Respect an OS-level request to reduce motion: keep the colour,
+   drop the animation. */
+@media (prefers-reduced-motion: reduce) {
+  a[href="/monitor/"].mon-critical {
+    animation: none;
+  }
+}
+
+/* Unacknowledged issue count, injected by custom.js as data-count. */
+a[href="/monitor/"][data-count]:not([data-count=""])::after {
+  content: attr(data-count);
+  position: absolute;
+  top: -6px;
+  right: -6px;
+  min-width: 17px;
+  height: 17px;
+  padding: 0 4px;
+  border-radius: 9px;
+  background: currentColor;
+  color: #0b0f0d;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 17px;
+  text-align: center;
+}

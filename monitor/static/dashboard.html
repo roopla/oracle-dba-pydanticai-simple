@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>Oracle DB Monitor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg: #0b0f0d;
+    --panel: #10231a;
+    --line: #1e3a2a;
+    --text: #d8e8dd;
+    --muted: #6f9080;
+    --amber: #e0a536;
+    --red: #e0524a;
+    --green: #3ecf8e;
+    --mono: "IBM Plex Mono", "SFMono-Regular", Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font-family: var(--mono); font-size: 14px; }
+  header { display: flex; align-items: baseline; justify-content: space-between; padding: 20px 28px; border-bottom: 1px solid var(--line); }
+  header .brand { display: flex; align-items: baseline; gap: 10px; }
+  header .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--green); box-shadow: 0 0 8px var(--green); animation: pulse 2.4s infinite ease-in-out; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+  header h1 { font-size: 16px; letter-spacing: .06em; text-transform: uppercase; margin: 0; font-weight: 600; }
+  header .sub, header .meta { color: var(--muted); font-size: 12px; }
+
+  .toolbar { display: grid; grid-template-columns: repeat(7, minmax(120px, 1fr)); gap: 10px; padding: 14px 28px; border-bottom: 1px solid var(--line); }
+  .control { display: flex; flex-direction: column; gap: 5px; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; }
+  .control input, .control select { width: 100%; background: #0a1712; color: var(--text); border: 1px solid var(--line); padding: 7px 8px; font-family: var(--mono); font-size: 12px; }
+  .summary-bar { display: flex; gap: 18px; align-items: center; padding: 10px 28px; border-bottom: 1px solid var(--line); color: var(--muted); font-size: 12px; }
+  .summary-bar b { color: var(--text); }
+
+  main { padding: 20px 28px 60px; display: flex; flex-direction: column; gap: 10px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-left: 3px solid var(--muted); padding: 14px 18px; }
+  .card.CRITICAL { border-left-color: var(--red); }
+  .card.WARNING { border-left-color: var(--amber); }
+  .card.INFO { border-left-color: var(--green); }
+  .card.RESOLVED { opacity: .58; border-left-color: var(--muted); }
+  .card.acked { background: #0e1d16; }
+  .card-top { display: flex; justify-content: space-between; gap: 16px; align-items: flex-start; }
+  .badge { display: inline-block; font-size: 10px; letter-spacing: .08em; text-transform: uppercase; padding: 2px 7px; border: 1px solid currentColor; border-radius: 2px; }
+  .badge.CRITICAL { color: var(--red); }
+  .badge.WARNING { color: var(--amber); }
+  .badge.INFO { color: var(--green); }
+  .badge.ACTIVE { color: var(--green); }
+  .badge.RESOLVED { color: var(--muted); }
+  .summary { font-size: 14px; margin: 8px 0 4px; }
+  .row-meta { color: var(--muted); font-size: 11px; display: flex; gap: 14px; flex-wrap: wrap; }
+  .rec { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); font-size: 12.5px; line-height: 1.5; }
+  .rec .label { color: var(--muted); text-transform: uppercase; font-size: 10px; letter-spacing: .06em; }
+  .rec code { display: block; margin-top: 4px; padding: 8px 10px; background: #0a1712; border: 1px solid var(--line); color: var(--green); white-space: pre-wrap; word-break: break-word; }
+  .approved-sql { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+  .approved-sql .sql-title { color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .06em; margin-top: 8px; }
+  .approved-sql .review { color: var(--amber); font-size: 10px; margin-left: 8px; }
+  .actions { display: flex; justify-content: flex-end; margin-top: 10px; }
+  button.ack { background: transparent; color: var(--muted); border: 1px solid var(--line); padding: 6px 12px; font-family: var(--mono); font-size: 11px; cursor: pointer; text-transform: uppercase; }
+  button.ack:hover { border-color: var(--green); color: var(--green); }
+  button.ack:disabled { opacity: .5; cursor: default; }
+  .empty { color: var(--muted); text-align: center; padding: 60px 0; }
+  .error { color: var(--red); }
+  @media (max-width: 1100px) { .toolbar { grid-template-columns: repeat(3, minmax(140px, 1fr)); } }
+  @media (max-width: 650px) { header { align-items: flex-start; gap: 14px; } .toolbar { grid-template-columns: 1fr 1fr; padding: 12px 16px; } main, .summary-bar { padding-left: 16px; padding-right: 16px; } }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand">
+    <div class="dot"></div>
+    <h1>Oracle DB Monitor</h1>
+    <span class="sub">incident lifecycle + agent-assisted diagnostics</span>
+    <a href="/" style="color:var(--muted); font-size:12px; text-decoration:none; border:1px solid var(--line); padding:3px 10px; margin-left:10px;">&larr; DBA Chat</a>
+  </div>
+  <div class="meta">last refresh: <span id="last-refresh">—</span></div>
+</header>
+
+<div class="toolbar">
+  <label class="control">Status
+    <select id="status"><option value="ALL">All</option><option value="ACTIVE" selected>Active</option><option value="RESOLVED">Resolved</option></select>
+  </label>
+  <label class="control">Acknowledgment
+    <select id="acknowledgment"><option value="ALL">All</option><option value="ACKNOWLEDGED">Acknowledged</option><option value="UNACKNOWLEDGED">Unacknowledged</option></select>
+  </label>
+  <label class="control">Severity
+    <select id="severity"><option value="">All</option><option value="CRITICAL">Critical</option><option value="WARNING">Warning</option><option value="INFO">Info</option></select>
+  </label>
+  <label class="control">Issue type
+    <select id="issue-type"><option value="">All</option><option value="TABLESPACE_USAGE">Tablespace usage</option><option value="BLOCKING_SESSION">Blocking session</option><option value="LONG_RUNNING_QUERY">Long-running query</option><option value="ALERT_LOG_ERROR">Alert log error</option><option value="WAIT_EVENT">Wait event</option><option value="WRITE_WORKLOAD">Write workload</option></select>
+  </label>
+  <label class="control">Search
+    <input id="search" type="search" maxlength="200" placeholder="summary, details, recommendation" />
+  </label>
+  <label class="control">Sort
+    <select id="sort"><option value="newest" selected>Newest</option><option value="oldest">Oldest</option></select>
+  </label>
+  <label class="control">Limit
+    <select id="limit"><option>25</option><option selected>100</option><option>250</option><option>500</option></select>
+  </label>
+</div>
+
+<div class="summary-bar">
+  <span>returned: <b id="c-returned">0</b></span>
+  <span>critical: <b id="c-critical">0</b></span>
+  <span>warning: <b id="c-warning">0</b></span>
+  <span>info: <b id="c-info">0</b></span>
+  <span>active: <b id="c-active">0</b></span>
+  <span>resolved: <b id="c-resolved">0</b></span>
+</div>
+
+<main id="issue-list"><div class="empty">Loading…</div></main>
+
+<script>
+const REFRESH_MS = 10000;
+const list = document.getElementById('issue-list');
+const lastRefresh = document.getElementById('last-refresh');
+const controls = ['status', 'acknowledgment', 'severity', 'issue-type', 'search', 'sort', 'limit']
+  .map(id => document.getElementById(id));
+let searchTimer;
+
+function esc(s) {
+  return (s ?? '').toString().replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+}
+
+function timeAgo(iso) {
+  if (!iso) return '—';
+  const diff = Math.max(0, (Date.now() - new Date(iso).getTime()) / 1000);
+  if (diff < 60) return Math.floor(diff) + 's ago';
+  if (diff < 3600) return Math.floor(diff / 60) + 'm ago';
+  if (diff < 86400) return Math.floor(diff / 3600) + 'h ago';
+  return Math.floor(diff / 86400) + 'd ago';
+}
+
+function renderCard(issue) {
+  const r = issue.recommendation;
+  const acked = issue.acknowledged;
+  const resolved = issue.status === 'RESOLVED';
+  return `
+    <div class="card ${issue.severity} ${issue.status} ${acked ? 'acked' : ''}">
+      <div class="card-top">
+        <div>
+          <span class="badge ${issue.status}">${issue.status}</span>
+          <span class="badge ${issue.severity}">${issue.severity}</span>
+          <span class="badge" style="color:var(--muted); border-color:var(--line)">${issue.issue_type}</span>
+        </div>
+        <div class="row-meta">
+          observations ${issue.observation_count} · episodes ${issue.episode_count} · last ${timeAgo(issue.last_seen_at)}
+          ${resolved ? ` · resolved ${timeAgo(issue.resolved_at)}` : ''}
+        </div>
+      </div>
+      <div class="summary">${esc(issue.summary)}</div>
+      <div class="rec">
+        <div class="label">Root cause</div>
+        <div>${esc(r.root_cause)}</div>
+        <div class="label" style="margin-top:8px">Recommended action</div>
+        <div>${esc(r.recommended_action)} <span style="color:var(--muted)">(confidence ${(r.confidence * 100).toFixed(0)}%)</span></div>
+        ${(issue.approved_actions || []).length ? `
+          <div class="approved-sql">
+            <div class="label">Approved SQL</div>
+            ${(issue.approved_actions || []).map(a => `
+              <div class="sql-title">${esc(a.title)}${a.requires_review ? '<span class="review">review required</span>' : ''}</div>
+              <code>${esc(a.sql)}</code>
+            `).join('')}
+          </div>` : ''}
+      </div>
+      <div class="actions">
+        ${acked
+          ? `<span class="row-meta">acknowledged by ${esc(issue.acknowledged_by)} · ${timeAgo(issue.acknowledged_at)}</span>`
+          : resolved
+            ? `<span class="row-meta">resolved without acknowledgment</span>`
+            : `<button class="ack" data-id="${issue.id}">Acknowledge</button>`}
+      </div>
+    </div>`;
+}
+
+function queryString() {
+  const params = new URLSearchParams({
+    status: document.getElementById('status').value,
+    acknowledgment: document.getElementById('acknowledgment').value,
+    sort: document.getElementById('sort').value,
+    limit: document.getElementById('limit').value
+  });
+  const severity = document.getElementById('severity').value;
+  const issueType = document.getElementById('issue-type').value;
+  const search = document.getElementById('search').value.trim();
+  if (severity) params.set('severity', severity);
+  if (issueType) params.set('issue_type', issueType);
+  if (search) params.set('search', search);
+  return params.toString();
+}
+
+async function refresh() {
+  try {
+    const res = await fetch(`api/issues?${queryString()}`);
+    if (!res.ok) throw new Error(`API returned ${res.status}`);
+    const issues = await res.json();
+
+    document.getElementById('c-returned').textContent = issues.length;
+    document.getElementById('c-critical').textContent = issues.filter(i => i.severity === 'CRITICAL').length;
+    document.getElementById('c-warning').textContent = issues.filter(i => i.severity === 'WARNING').length;
+    document.getElementById('c-info').textContent = issues.filter(i => i.severity === 'INFO').length;
+    document.getElementById('c-active').textContent = issues.filter(i => i.status === 'ACTIVE').length;
+    document.getElementById('c-resolved').textContent = issues.filter(i => i.status === 'RESOLVED').length;
+
+    list.innerHTML = issues.length
+      ? issues.map(renderCard).join('')
+      : '<div class="empty">No incidents match the selected filters.</div>';
+
+    list.querySelectorAll('button.ack').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        btn.textContent = 'Acknowledging…';
+        const response = await fetch(`api/issues/${btn.dataset.id}/acknowledge`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ acknowledged_by: 'dashboard-user' })
+        });
+        if (!response.ok) console.error(await response.text());
+        await refresh();
+      });
+    });
+
+    lastRefresh.textContent = new Date().toLocaleTimeString();
+  } catch (error) {
+    console.error(error);
+    list.innerHTML = `<div class="empty error">Unable to load incidents: ${esc(error.message)}</div>`;
+  }
+}
+
+controls.forEach(control => {
+  const eventName = control.id === 'search' ? 'input' : 'change';
+  control.addEventListener(eventName, () => {
+    if (control.id === 'search') {
+      clearTimeout(searchTimer);
+      searchTimer = setTimeout(refresh, 250);
+    } else {
+      refresh();
+    }
+  });
+});
+
+refresh();
+setInterval(refresh, REFRESH_MS);
+</script>
+</body>
+</html>

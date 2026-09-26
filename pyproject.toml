@@ -1,0 +1,33 @@
+[project]
+name = "oracle-dba-pydanticai-simple"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "chainlit>=2.11.1",
+    "fastapi>=0.139.0",
+    "fastmcp>=3.4.4",
+    "httpx>=0.28.1",
+    "opentelemetry-distro>=0.64b0",
+    "opentelemetry-exporter-otlp>=1.43.0",
+    "opentelemetry-instrumentation-asyncio==0.64b0",
+    "opentelemetry-instrumentation-click==0.64b0",
+    "opentelemetry-instrumentation-dbapi==0.64b0",
+    "opentelemetry-instrumentation-exceptions==0.64b0",
+    "opentelemetry-instrumentation-grpc==0.64b0",
+    "opentelemetry-instrumentation-httpx==0.64b0",
+    "opentelemetry-instrumentation-logging==0.64b0",
+    "opentelemetry-instrumentation-openai-v2>=2.4b0",
+    "opentelemetry-instrumentation-requests==0.64b0",
+    "opentelemetry-instrumentation-sqlite3==0.64b0",
+    "opentelemetry-instrumentation-starlette==0.64b0",
+    "opentelemetry-instrumentation-threading==0.64b0",
+    "opentelemetry-instrumentation-tortoiseorm==0.64b0",
+    "opentelemetry-instrumentation-urllib==0.64b0",
+    "opentelemetry-instrumentation-urllib3==0.64b0",
+    "opentelemetry-instrumentation-wsgi==0.64b0",
+    "oracledb>=4.0.1",
+    "pydantic-ai-slim[mcp,openai,web]>=2.9.0",
+    "pydantic-settings>=2.14.2",
+]

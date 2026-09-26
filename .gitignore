@@ -1,0 +1,54 @@
+# UV virtual environment
+.venv/
+
+# Local configuration and credentials
+.env
+
+# Python-generated files
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime files
+*.log
+*.db
+*.db-shm
+*.db-wal
+
+# Testing and linting caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Build output
+build/
+dist/
+*.egg-info/
+
+# Editors
+.vscode/
+.idea/
+
+# Operating system files
+.DS_Store
+Thumbs.db
+
+# All env files (keep only templates)
+.env*
+!.env.example
+!.env.*.example
+
+# Oracle credentials / instance files
+stby-backup/
+*.ora
+orapw*
+
+# Runtime state and backups
+monitor-db-backups/
+.ingest_sim/
+logs/
+
+# Archives
+*.zip
