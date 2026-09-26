@@ -125,6 +125,11 @@ SQL_STANDBY_REDO = """
     ORDER BY group#
 """
 
+# Standby-only. APPLIED in v$archived_log means "applied by redo apply",
+# which never happens to a primary's own archives, so on a primary this
+# would report a gap equal to the latest sequence. The role filter makes
+# it return no rows there; the primary's view of transport gaps is
+# gap_status in v$archive_dest_status.
 SQL_SEQUENCE_GAP = """
     SELECT
         thread#                                           AS thread_num,
@@ -135,6 +140,7 @@ SQL_SEQUENCE_GAP = """
                                                           AS sequence_gap
     FROM v$archived_log
     WHERE resetlogs_change# = (SELECT resetlogs_change# FROM v$database)
+      AND (SELECT database_role FROM v$database) = 'PHYSICAL STANDBY'
     GROUP BY thread#
     ORDER BY thread#
 """

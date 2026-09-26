@@ -90,8 +90,12 @@ ALTER DATABASE RECOVER MANAGED STANDBY DATABASE DISCONNECT FROM SESSION;
 EXIT;
 EOF
 
-echo "==> Forcing a log switch on the primary so redo ships immediately"
+# During the duplicate the primary tried to ship redo to a NOMOUNT
+# instance and parked dest_2 in ORA-16058 until the reopen interval
+# (300s) expires. Re-enabling it retries now.
+echo "==> Re-enabling redo transport and forcing a log switch on the primary"
 pri "sqlplus -s / as sysdba" <<'EOF'
+ALTER SYSTEM SET log_archive_dest_state_2='ENABLE' SCOPE=BOTH;
 ALTER SYSTEM ARCHIVE LOG CURRENT;
 EXIT;
 EOF
@@ -108,11 +112,11 @@ COLUMN value FORMAT A22
 SELECT name, db_unique_name, database_role, open_mode, protection_mode
 FROM   v$database;
 PROMPT
-PROMPT -- Lag (should be small and non-null) --
+PROMPT Lag (should be small and non-null):
 SELECT name, value, unit FROM v$dataguard_stats
 WHERE  name IN ('transport lag','apply lag');
 PROMPT
-PROMPT -- Apply processes (MRP0 must be present) --
+PROMPT Apply processes (MRP0 must be present):
 SELECT process, status, thread#, sequence# FROM v$managed_standby
 WHERE  process IN ('MRP0','RFS');
 EXIT;

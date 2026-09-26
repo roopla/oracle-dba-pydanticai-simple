@@ -230,7 +230,7 @@ def get_dataguard_status() -> dict[str, Any]:
         MRP0 means redo apply is stopped.
       - standby_redo_logs: empty means real-time apply is not possible
       - sequence_gap: highest received versus highest applied sequence
-        per thread
+        per thread. Standby side only; always empty on the primary.
 
     If the response contains a standby_note, apply lag could not be read
     from the standby. Say so rather than reporting zero lag.
