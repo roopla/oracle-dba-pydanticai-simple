@@ -1,0 +1,6 @@
+# Default: normalize text files to LF in the repo
+* text=auto
+
+# Shell scripts run inside Linux containers - always LF, even on Windows
+*.sh text eol=lf
+*.docker text eol=lf
