@@ -85,3 +85,52 @@ a[href="/monitor/"][data-count]:not([data-count=""])::after {
   line-height: 17px;
   text-align: center;
 }
+
+/* --------------------------------------------------------------------
+ * Remediation approval cards.
+ *
+ * Chainlit renders action buttons as muted "ghost" text, which is easy
+ * to miss or mistake for part of the card. chat_actions.py gives the
+ * approval buttons known ids, so they can be styled as real buttons:
+ *   approve-<card>               reversible action   - green
+ *   approve-irreversible-<card>  irreversible action - red
+ *   reject-<card>                neutral outline
+ * ------------------------------------------------------------------ */
+
+button[id^="approve-"],
+button[id^="reject-"] {
+  border: 1px solid transparent !important;
+  font-weight: 600 !important;
+  margin: 4px 8px 0 0 !important;
+}
+
+button[id^="approve-"] {
+  color: #0f1a14 !important;
+  background: #3ecf8e !important;
+  border-color: #3ecf8e !important;
+}
+
+button[id^="approve-"]:hover {
+  background: #5bdca2 !important;
+}
+
+/* Irreversible actions get the alarm colour. */
+button[id^="approve-irreversible-"] {
+  color: #ffffff !important;
+  background: #e0524a !important;
+  border-color: #e0524a !important;
+}
+
+button[id^="approve-irreversible-"]:hover {
+  background: #e8716a !important;
+}
+
+button[id^="reject-"] {
+  color: inherit !important;
+  background: transparent !important;
+  border-color: rgba(127, 127, 127, 0.55) !important;
+}
+
+button[id^="reject-"]:hover {
+  background: rgba(127, 127, 127, 0.15) !important;
+}

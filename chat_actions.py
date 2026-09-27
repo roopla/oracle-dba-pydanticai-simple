@@ -14,6 +14,7 @@ model can call is capable of changing the database.
 from __future__ import annotations
 
 import json
+import uuid
 from typing import Any
 
 import chainlit as cl
@@ -159,22 +160,58 @@ async def send_approval_cards(plans: list[dict[str, Any]]) -> None:
             f"_Nothing has run yet. This executes only if you approve._"
         )
 
+        # Known ids instead of Chainlit's random ones: public/custom.css
+        # styles the buttons by id prefix, and each handler uses card_ids
+        # to remove BOTH buttons, so a card cannot be approved and then
+        # rejected (or vice versa).
+        card = uuid.uuid4().hex
+        approve_prefix = (
+            "approve" if plan.get("reversible") else "approve-irreversible"
+        )
+        card_ids = {
+            "approve_remediation": f"{approve_prefix}-{card}",
+            "reject_remediation": f"reject-{card}",
+        }
+        payload = {"plan": plan, "card_ids": card_ids}
+
         await cl.Message(
             content=body,
             author="approval",
             actions=[
                 cl.Action(
+                    id=card_ids["approve_remediation"],
                     name="approve_remediation",
-                    payload={"plan": plan},
+                    payload=payload,
                     label=f"Approve and run {plan.get('action')}",
+                    icon="play",
                 ),
                 cl.Action(
+                    id=card_ids["reject_remediation"],
                     name="reject_remediation",
-                    payload={"plan": plan},
+                    payload=payload,
                     label="Reject",
+                    icon="x",
                 ),
             ],
         ).send()
+
+
+async def _retire_card(action: cl.Action) -> None:
+    """Remove every button on an approval card, not just the one clicked."""
+    card_ids = action.payload.get("card_ids") or {}
+
+    if not card_ids:
+        # Cards sent before card_ids existed.
+        await action.remove()
+        return
+
+    for name, action_id in card_ids.items():
+        await cl.Action(
+            id=action_id,
+            name=name,
+            payload={},
+            forId=action.forId,
+        ).remove()
 
 
 # --------------------------------------------------------------------------
@@ -254,6 +291,9 @@ async def on_reject_remediation(action: cl.Action) -> None:
     """Record the refusal. Rejections are worth auditing too."""
     plan = action.payload.get("plan") or {}
 
+    # Buttons first, so a double-click cannot record two rejections.
+    await _retire_card(action)
+
     await record_remediation(
         action=str(plan.get("action")),
         params=plan.get("params") or {},
@@ -264,7 +304,6 @@ async def on_reject_remediation(action: cl.Action) -> None:
         outcome="REJECTED",
     )
 
-    await action.remove()
     await cl.Message(
         content=f"Rejected `{plan.get('action')}`. Nothing was run.",
         author="system",
@@ -279,8 +318,9 @@ async def on_approve_remediation(action: cl.Action) -> None:
     params = plan.get("params") or {}
     requested_at = now_iso()
 
-    # Remove the buttons first so a slow action cannot be double-clicked.
-    await action.remove()
+    # Remove the buttons first so a slow action cannot be double-clicked,
+    # and so Reject cannot be clicked after it has already run.
+    await _retire_card(action)
 
     progress = cl.Message(
         content=f"Running `{action_name}`... this can take up to 90 seconds.",
