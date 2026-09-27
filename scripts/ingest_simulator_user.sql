@@ -12,8 +12,12 @@ CREATE USER LOADGEN IDENTIFIED BY "oracle"
     TEMPORARY TABLESPACE TEMP
     QUOTA 2G ON USERS;
 
-GRANT CREATE SESSION TO LOADGEN;
-GRANT CREATE TABLE   TO LOADGEN;
+GRANT CREATE SESSION  TO LOADGEN;
+GRANT CREATE TABLE    TO LOADGEN;
+-- INGEST_SIM_ORDERS.ID is an identity column, which Oracle backs with a
+-- system-generated sequence: on 19c, CREATE TABLE fails with ORA-01031
+-- without this privilege.
+GRANT CREATE SEQUENCE TO LOADGEN;
 
 -- To remove everything after the demo:
 --   DROP USER LOADGEN CASCADE;
