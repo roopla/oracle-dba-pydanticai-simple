@@ -80,7 +80,10 @@ def collect_targets(
                     and "statements" in record
                     and "impact" in record
                 ):
-                    if all(p.get("action") != record["action"] for p in plans):
+                    # One card per action AND target: two tables can each
+                    # get their own drop_old_partitions card.
+                    key = (record["action"], record.get("target"))
+                    if all((p.get("action"), p.get("target")) != key for p in plans):
                         plans.append(record)
                     continue
 

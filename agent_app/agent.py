@@ -106,6 +106,17 @@ user chooses; compare them briefly and do not choose for them. Only use \
 propose_remediation for a single tablespace action when the user asked \
 for that specific action.
 
+PARTITIONS
+When the pressured tablespace holds a table range-partitioned by month, \
+propose_tablespace_remediation also offers drop_old_partitions for it. \
+When comparing the options, say plainly that dropping partitions \
+PERMANENTLY deletes those months of data (recoverable only from backup), \
+while autoextend and a new datafile keep all data but use more disk. \
+The current and the previous month are always kept. For questions about \
+partition retention or old data, use get_partition_retention first; \
+propose drop_old_partitions on its own only when the user asks to purge \
+old partitions.
+
 AUDIENCE
 Judge from the question whether you are talking to a DBA or a developer. \
 For DBAs, use precise Oracle terminology and go into internals where it \

@@ -44,9 +44,15 @@ enable_tablespace_autoextend
 add_tablespace_datafile
     Adds a datafile next to the tablespace's existing ones. Not reversible.
 
-Both tablespace actions derive their SQL from the dictionary (file names,
-paths), so they set pin_statements: execute_remediation re-plans and
-refuses unless the statements are exactly the ones the human approved.
+drop_old_partitions
+    Drops the partitions of a table range-partitioned by month that are
+    older than the retention window (never fewer than the current and the
+    previous month kept). PERMANENT data deletion. Not reversible.
+
+The tablespace and partition actions derive their SQL from the dictionary
+(file names, paths, partition names), so they set pin_statements:
+execute_remediation re-plans and refuses unless the statements are exactly
+the ones the human approved.
 """
 
 from __future__ import annotations
@@ -63,6 +69,13 @@ import oracledb
 import paramiko
 
 from oracle_core.db import execute_statements, query
+from oracle_core.partitions import (
+    MIN_KEEP_MONTHS,
+    monthly_partitioned_tables,
+    retention_plan,
+    table_partitions,
+    validate_keep_months,
+)
 from oracle_core.queries import validate_pdb_name
 
 
@@ -999,6 +1012,161 @@ def _execute_add_tablespace_datafile(params: dict[str, Any]) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
+# Partition retention (primary, one table)
+# --------------------------------------------------------------------------
+#
+# Eligible: any table range-partitioned by month on one DATE/TIMESTAMP
+# column, owned by an application schema (oracle_core.partitions decides).
+# The newest keep_months months - never fewer than 2, the current and the
+# previous month - and the two newest partitions are always kept.
+
+_OBJECT_NAME = re.compile(r"^[A-Z][A-Z0-9_$#]{0,127}$")
+
+_PARTITION_PARAMS_HELP = (
+    "pdb_name (required), owner (required, the table's schema), table_name "
+    "(required; must be range-partitioned by month on a DATE/TIMESTAMP "
+    "column), keep_months (optional, default 2, minimum 2: the current and "
+    "the previous month are always kept)"
+)
+
+
+def _object_name(value: Any, what: str) -> str:
+    name = str(value or "").strip().upper()
+    if not _OBJECT_NAME.match(name):
+        raise ValueError(f"{what} {value!r} is not a valid name")
+    return name
+
+
+def _partition_target(params: dict[str, Any]) -> tuple[str, str, str, int]:
+    pdb_name = validate_pdb_name(str(params.get("pdb_name") or ""))
+    owner = _object_name(params.get("owner"), "owner")
+    table = _object_name(params.get("table_name"), "table_name")
+    keep = validate_keep_months(params.get("keep_months", MIN_KEEP_MONTHS))
+    return pdb_name, owner, table, keep
+
+
+def _tablespaces_usage(pdb_name: str, tablespaces: list[str]) -> str:
+    """'TS used/total MB (pct%)' for each tablespace, read inside the PDB."""
+    parts = []
+    for tablespace in tablespaces:
+        row = query(
+            """
+            SELECT (SELECT SUM(bytes) FROM dba_data_files
+                    WHERE tablespace_name = :ts) AS total,
+                   (SELECT NVL(SUM(bytes), 0) FROM dba_free_space
+                    WHERE tablespace_name = :ts) AS free
+            FROM dual
+            """,
+            database_name=pdb_name,
+            binds={"ts": tablespace},
+        )[0]
+        total = int(row["total"] or 0)
+        used = total - int(row["free"] or 0)
+        pct = round(used / total * 100, 1) if total else 0.0
+        parts.append(f"{tablespace} {used // _MB} of {total // _MB} MB used ({pct}%)")
+    return "; ".join(parts)
+
+
+def _plan_drop_old_partitions(params: dict[str, Any]) -> ActionPlan:
+    pdb_name, owner, table, keep = _partition_target(params)
+    plan = retention_plan(pdb_name, owner, table, keep)
+
+    if not plan["drop"]:
+        raise ValueError(
+            f"Nothing to drop: every partition of {owner}.{table} is within "
+            f"the newest {keep} months or among the two newest partitions "
+            f"({len(plan['partitions'])} partitions in total)"
+        )
+
+    qualified = f'"{owner}"."{table}"'
+    statements = []
+
+    # Oracle refuses to drop the highest partition of the range section of
+    # an interval-partitioned table (ORA-14758). Re-setting the interval to
+    # its own value moves the transition point to the newest partition, so
+    # any older one can then be dropped. The interval text is the
+    # dictionary's own, already checked to be one month.
+    if plan["interval"]:
+        statements.append(f"ALTER TABLE {qualified} SET INTERVAL ({plan['interval']})")
+
+    for partition in plan["drop"]:
+        name = _object_name(partition["partition_name"], "partition")
+        statements.append(
+            f'ALTER TABLE {qualified} DROP PARTITION "{name}" UPDATE INDEXES'
+        )
+
+    dropped = ", ".join(p["month"] for p in plan["drop"])
+    kept = ", ".join(p["month"] for p in plan["keep"])
+    tablespaces = sorted({p["tablespace_name"] for p in plan["drop"] if p["tablespace_name"]})
+
+    return ActionPlan(
+        action="drop_old_partitions",
+        description=(
+            f"Drop {len(plan['drop'])} partitions of {owner}.{table} older than "
+            f"{plan['oldest_kept_month']}, keeping the newest {keep} months."
+        ),
+        statements=statements,
+        impact=(
+            f"PERMANENTLY DELETES the rows for {dropped} "
+            f"(about {plan['drop_size_mb']} MB of table data, plus their local "
+            f"index entries), freeing space in {', '.join(tablespaces) or 'the tablespace'}. "
+            f"Kept: {kept}. The rows can only be recovered from a backup. "
+            "UPDATE INDEXES keeps global indexes usable, so the application "
+            "is not interrupted, but the drop takes longer on large tables. "
+            f"Current database month: {plan['current_month']}. Runs on the "
+            "primary; the standby follows through redo."
+        ),
+        target=f"primary {pdb_name} table {owner}.{table}",
+        reversible=False,
+        params={
+            "pdb_name": pdb_name,
+            "owner": owner,
+            "table_name": table,
+            "keep_months": keep,
+        },
+    )
+
+
+def _execute_drop_old_partitions(params: dict[str, Any]) -> dict[str, Any]:
+    plan = _plan_drop_old_partitions(params)
+    pdb_name = plan.params["pdb_name"]
+    owner = plan.params["owner"]
+    table = plan.params["table_name"]
+
+    before = retention_plan(pdb_name, owner, table, plan.params["keep_months"])
+    tablespaces = sorted(
+        {p["tablespace_name"] for p in before["drop"] if p["tablespace_name"]}
+    )
+    space_before = _tablespaces_usage(pdb_name, tablespaces)
+
+    statement_results = execute_statements(plan.statements, database_name=pdb_name)
+
+    after = table_partitions(pdb_name, owner, table)
+    remaining = {p["partition_name"] for p in after["partitions"]}
+    targeted = {p["partition_name"] for p in before["drop"]}
+    space_after = _tablespaces_usage(pdb_name, tablespaces)
+
+    succeeded = all(r["status"] == "OK" for r in statement_results) and not (
+        targeted & remaining
+    )
+
+    return {
+        "action": "drop_old_partitions",
+        "before": (
+            f"{len(before['partitions'])} partitions "
+            f"({before['partitions'][0]['month']} to {before['partitions'][-1]['month']}); "
+            f"{space_before}"
+        ),
+        "statements": statement_results,
+        "after": (
+            f"{len(after['partitions'])} partitions "
+            f"({', '.join(p['month'] for p in after['partitions'])}); {space_after}"
+        ),
+        "succeeded": succeeded,
+    }
+
+
+# --------------------------------------------------------------------------
 # Registry
 # --------------------------------------------------------------------------
 
@@ -1062,6 +1230,22 @@ ACTIONS: dict[str, RemediationAction] = {
         ),
         pin_statements=True,
     ),
+    "drop_old_partitions": RemediationAction(
+        name="drop_old_partitions",
+        description=(
+            "Drop the partitions of a table range-partitioned by month that "
+            "are older than the retention window, freeing their space. Always "
+            "keeps at least the current and the previous month. PERMANENTLY "
+            "deletes those rows. Offered for space pressure in a tablespace "
+            "that holds such a table, or when the user asks about partition "
+            "retention. Not reversible."
+        ),
+        reversible=False,
+        planner=_plan_drop_old_partitions,
+        executor=_execute_drop_old_partitions,
+        params_help=_PARTITION_PARAMS_HELP,
+        pin_statements=True,
+    ),
 }
 
 
@@ -1100,6 +1284,9 @@ def plan_remediation(
 # The tablespace actions offered side by side, gentlest first.
 TABLESPACE_OPTIONS = ("enable_tablespace_autoextend", "add_tablespace_datafile")
 
+# Partitioned tables offered as extra options for one tablespace.
+MAX_PARTITION_OPTIONS = 3
+
 
 def plan_tablespace_options(
     pdb_name: str,
@@ -1110,7 +1297,9 @@ def plan_tablespace_options(
 ) -> dict[str, Any]:
     """Plan every applicable tablespace fix, for a human to choose one.
 
-    Executes nothing. Each returned plan carries the same
+    The fixes: enable autoextend, add a datafile, and - for each table in
+    the tablespace range-partitioned by month - drop its partitions older
+    than the current and previous month. Executes nothing. Each returned plan carries the same
     alternative_group, which the chat uses to withdraw the other options
     once one is approved. An option that does not apply is listed under
     unavailable with the reason instead of being dropped silently.
@@ -1132,14 +1321,41 @@ def plan_tablespace_options(
         except ValueError as exc:
             unavailable[action] = str(exc)
 
+    # A table range-partitioned by month in this tablespace adds a third
+    # kind of fix: drop its partitions that are older than the retention
+    # window. At most MAX_PARTITION_OPTIONS tables, largest drop first.
+    try:
+        tables = monthly_partitioned_tables(
+            validate_pdb_name(pdb_name), tablespace_name.strip().upper()
+        )
+    except ValueError:
+        tables = []
+    partition_options = []
+    for table in tables:
+        label = f"drop_old_partitions {table['owner']}.{table['table_name']}"
+        try:
+            partition_options.append(
+                plan_remediation(
+                    "drop_old_partitions",
+                    {
+                        "pdb_name": pdb_name,
+                        "owner": table["owner"],
+                        "table_name": table["table_name"],
+                        "keep_months": MIN_KEEP_MONTHS,
+                    },
+                )
+            )
+        except ValueError as exc:
+            unavailable[label] = str(exc)
+    options.extend(partition_options[:MAX_PARTITION_OPTIONS])
+
     if not options:
         raise ValueError(
             "No tablespace fix applies: "
             + "; ".join(f"{name}: {reason}" for name, reason in unavailable.items())
         )
 
-    first = options[0]["params"]
-    group = f"tablespace:{first['pdb_name']}:{first['tablespace_name']}"
+    group = f"tablespace:{pdb_name.strip().upper()}:{tablespace_name.strip().upper()}"
     for plan in options:
         plan["alternative_group"] = group
 

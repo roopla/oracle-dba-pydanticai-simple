@@ -26,10 +26,16 @@ from oracle_core.queries import (
     get_pdb_status,
     list_pdbs as query_list_pdbs,
     list_users as query_list_users,
+    validate_pdb_name,
 )
 from oracle_core.queries_advanced import (
     get_ash_activity as query_ash_activity,
     get_dataguard_status as query_dataguard_status,
+)
+from oracle_core.partitions import (
+    monthly_partitioned_tables,
+    retention_plan,
+    validate_keep_months,
 )
 from oracle_core.remediation import (
     list_actions as query_remediation_actions,
@@ -286,6 +292,56 @@ def get_ash_activity(
         group_by=group_by,
         limit=limit,
     )
+
+
+@mcp.tool
+def get_partition_retention(
+    pdb_name: str,
+    tablespace_name: str | None = None,
+    keep_months: int = 2,
+) -> dict[str, Any]:
+    """Show which partitions of monthly range-partitioned tables are old.
+
+    Read-only. For every table in the PDB range-partitioned by month on a
+    DATE/TIMESTAMP column (optionally only those with partitions in
+    tablespace_name), lists each partition's month and size, and which ones
+    a retention of keep_months would drop. The current and the previous
+    month, and the two newest partitions, are always kept. Use it before
+    proposing drop_old_partitions, or when asked about partition retention
+    or which tables hold old data.
+
+    Args:
+        pdb_name: PDB to look in, such as ORCLPDB1.
+        tablespace_name: Optional tablespace; only tables with partitions
+            in it are listed.
+        keep_months: Months to keep, from 2 to 120. Default 2.
+    """
+    pdb = validate_pdb_name(pdb_name)
+    keep = validate_keep_months(keep_months)
+    tables = []
+    errors = {}
+    for table in monthly_partitioned_tables(pdb, tablespace_name):
+        name = f"{table['owner']}.{table['table_name']}"
+        try:
+            plan = retention_plan(pdb, table["owner"], table["table_name"], keep)
+        except ValueError as exc:
+            errors[name] = str(exc)
+            continue
+        tables.append(
+            {
+                "table": name,
+                "partitions_total": len(plan["partitions"]),
+                "current_month": plan["current_month"],
+                "oldest_kept_month": plan["oldest_kept_month"],
+                "drop": [
+                    {"month": p["month"], "partition": p["partition_name"], "size_mb": p["size_mb"]}
+                    for p in plan["drop"]
+                ],
+                "drop_size_mb": plan["drop_size_mb"],
+                "keep_months_present": [p["month"] for p in plan["keep"]],
+            }
+        )
+    return {"pdb_name": pdb, "keep_months": keep, "tables": tables, "errors": errors}
 
 
 @mcp.tool
