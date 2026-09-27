@@ -28,6 +28,11 @@ restart_standby_instance
     hammer, marked not reversible, and guarded so it can never run against
     anything but a mounted physical standby.
 
+    python-oracledb in thin mode cannot shut down or start an instance
+    (DPY-3001), so those two steps run as SQL*Plus inside the standby's
+    Docker container over SSH (STANDBY_SSH_* settings). The scripts are
+    fixed text; nothing from the model reaches the remote command.
+
 Both poll for MRP0 after running rather than reading state once, because
 MRP0 startup can take longer than the statement's own return.
 """
@@ -35,11 +40,14 @@ MRP0 startup can take longer than the statement's own return.
 from __future__ import annotations
 
 import os
+import re
+import shlex
 import time
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
 import oracledb
+import paramiko
 
 
 # Hard ceiling per database round trip, in milliseconds. Without this a
@@ -54,6 +62,14 @@ MRP_POLL_INTERVAL = 5
 
 # Startup after SHUTDOWN ABORT needs its own budget.
 STARTUP_POLL_SECONDS = 180
+
+# SSH to the Docker host that runs the standby container.
+SSH_CONNECT_TIMEOUT_SECONDS = 10
+# SHUTDOWN ABORT is seconds; STARTUP MOUNT on a small lab SGA is well
+# under a minute. Generous, but bounded.
+CONTAINER_SQLPLUS_TIMEOUT_SECONDS = 180
+
+_CONTAINER_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
 
 
 @dataclass(frozen=True)
@@ -113,32 +129,158 @@ def _standby_credentials() -> tuple[str, str, str]:
     return dsn, user, password
 
 
-def _standby_connection(prelim: bool = False):
-    """Open a bounded SYSDBA connection to the standby.
-
-    prelim=True opens a preliminary connection, which is the only kind
-    available while the instance is down - needed to issue STARTUP after
-    SHUTDOWN ABORT.
-    """
+def _standby_connection():
+    """Open a bounded SYSDBA connection to the standby."""
     dsn, user, password = _standby_credentials()
 
-    kwargs: dict[str, Any] = {
-        "user": user,
-        "password": password,
-        "dsn": dsn,
-        "mode": oracledb.AUTH_MODE_SYSDBA,
-        "tcp_connect_timeout": CONNECT_TIMEOUT_SECONDS,
-    }
-
-    if prelim:
-        kwargs["mode"] = oracledb.AUTH_MODE_SYSDBA | oracledb.AUTH_MODE_PRELIM
-
-    connection = oracledb.connect(**kwargs)
-
-    if not prelim:
-        connection.call_timeout = CALL_TIMEOUT_MS
+    connection = oracledb.connect(
+        user=user,
+        password=password,
+        dsn=dsn,
+        mode=oracledb.AUTH_MODE_SYSDBA,
+        tcp_connect_timeout=CONNECT_TIMEOUT_SECONDS,
+    )
+    connection.call_timeout = CALL_TIMEOUT_MS
 
     return connection
+
+
+# --------------------------------------------------------------------------
+# Standby instance control (SQL*Plus in the container, over SSH)
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class StandbyHost:
+    """Where the standby container runs, and how to reach it."""
+
+    host: str
+    port: int
+    user: str
+    password: str | None
+    key_file: str | None
+    container: str
+
+    def describe(self) -> str:
+        return f"container {self.container} on {self.user}@{self.host}"
+
+
+def _standby_host() -> StandbyHost:
+    """Read STANDBY_SSH_* settings, refusing anything incomplete."""
+    host = (os.environ.get("STANDBY_SSH_HOST") or "").strip()
+    user = (os.environ.get("STANDBY_SSH_USER") or "").strip()
+    password = os.environ.get("STANDBY_SSH_PASSWORD") or None
+    key_file = (os.environ.get("STANDBY_SSH_KEY_FILE") or "").strip() or None
+    container = (os.environ.get("STANDBY_CONTAINER") or "").strip()
+    port_text = (os.environ.get("STANDBY_SSH_PORT") or "22").strip()
+
+    missing = [
+        name
+        for name, value in (
+            ("STANDBY_SSH_HOST", host),
+            ("STANDBY_SSH_USER", user),
+            ("STANDBY_CONTAINER", container),
+        )
+        if not value
+    ]
+    if not (password or key_file):
+        missing.append("STANDBY_SSH_PASSWORD or STANDBY_SSH_KEY_FILE")
+
+    if missing:
+        raise RuntimeError(
+            "Standby instance control is not configured. Missing: "
+            + ", ".join(missing)
+        )
+
+    if not _CONTAINER_NAME.match(container):
+        raise RuntimeError(f"STANDBY_CONTAINER {container!r} is not a valid name")
+
+    if not port_text.isdigit():
+        raise RuntimeError(f"STANDBY_SSH_PORT {port_text!r} is not a number")
+
+    return StandbyHost(
+        host=host,
+        port=int(port_text),
+        user=user,
+        password=password,
+        key_file=os.path.expanduser(key_file) if key_file else None,
+        container=container,
+    )
+
+
+def _container_sqlplus(target: StandbyHost, script: str) -> str:
+    """Run a fixed SQL*Plus script as SYSDBA inside the standby container.
+
+    The host key must already be in known_hosts: an unknown or changed
+    key is refused rather than trusted, so a spoofed host cannot collect
+    the credentials. Returns combined stdout and stderr.
+    """
+    remote = (
+        f"docker exec -i -u oracle {shlex.quote(target.container)} "
+        + "bash -c "
+        + shlex.quote('"$ORACLE_HOME/bin/sqlplus" -s / as sysdba')
+    )
+
+    client = paramiko.SSHClient()
+    client.load_system_host_keys()
+    client.set_missing_host_key_policy(paramiko.RejectPolicy())
+
+    try:
+        client.connect(
+            hostname=target.host,
+            port=target.port,
+            username=target.user,
+            password=target.password,
+            key_filename=target.key_file,
+            timeout=SSH_CONNECT_TIMEOUT_SECONDS,
+            allow_agent=False,
+            look_for_keys=False,
+        )
+        stdin, stdout, stderr = client.exec_command(
+            remote, timeout=CONTAINER_SQLPLUS_TIMEOUT_SECONDS
+        )
+        stdin.write(script.rstrip() + "\nEXIT;\n")
+        stdin.channel.shutdown_write()
+
+        output = stdout.read().decode(errors="replace")
+        output += stderr.read().decode(errors="replace")
+        exit_status = stdout.channel.recv_exit_status()
+    finally:
+        client.close()
+
+    if exit_status != 0:
+        raise RuntimeError(
+            f"docker exec exited with status {exit_status}: {output.strip()[:500]}"
+        )
+
+    return output
+
+
+def _instance_step(
+    target: StandbyHost,
+    statement: str,
+    success_marker: str,
+) -> dict[str, Any]:
+    """Run one instance-level statement and judge it by SQL*Plus output."""
+    try:
+        output = _container_sqlplus(target, statement + ";")
+    except Exception as exc:  # noqa: BLE001
+        return {
+            "statement": statement,
+            "status": "ERROR",
+            "error": f"{type(exc).__name__}: {exc}",
+        }
+
+    errors = [line.strip() for line in output.splitlines() if "ORA-" in line]
+
+    if success_marker in output and not errors:
+        return {"statement": statement, "status": "OK"}
+
+    return {
+        "statement": statement,
+        "status": "ERROR",
+        "error": "; ".join(errors) or f"Unexpected output: {output.strip()[:300]}",
+    }
 
 
 def _run_on_standby(statements: list[str]) -> list[dict[str, Any]]:
@@ -388,6 +530,13 @@ def _plan_restart_standby_instance(params: dict[str, Any]) -> ActionPlan:
 
     dsn, _, _ = _standby_credentials()
 
+    # Refuse to plan what cannot be executed, so the agent is never able
+    # to put an unrunnable action in front of a human.
+    try:
+        target = _standby_host()
+    except RuntimeError as exc:
+        raise ValueError(f"restart_standby_instance is unavailable: {exc}") from exc
+
     return ActionPlan(
         action="restart_standby_instance",
         description=(
@@ -409,7 +558,8 @@ def _plan_restart_standby_instance(params: dict[str, Any]) -> ActionPlan:
             "destination will error until it is back, and the primary's "
             "log_archive_dest_2 may need re-enabling afterwards. Nothing "
             "on the primary is changed. This action cannot be undone once "
-            "started."
+            "started. SHUTDOWN ABORT and STARTUP MOUNT run through SQL*Plus "
+            f"in {target.describe()}."
         ),
         target=f"standby {dsn}",
         reversible=False,
@@ -421,26 +571,18 @@ def _execute_restart_standby_instance(params: dict[str, Any]) -> dict[str, Any]:
     if params:
         raise ValueError("restart_standby_instance takes no parameters")
 
+    target = _standby_host()
     before = _standby_apply_state()
     _require_physical_standby(before)
 
     statement_results: list[dict[str, Any]] = []
 
-    # SHUTDOWN ABORT and STARTUP are instance operations, not SQL, so they
-    # go through the driver's dedicated methods rather than a cursor.
-    try:
-        connection = _standby_connection()
-        connection.shutdown(mode=oracledb.DBSHUTDOWN_ABORT)
-        connection.close()
-        statement_results.append({"statement": "SHUTDOWN ABORT", "status": "OK"})
-    except Exception as exc:  # noqa: BLE001
-        statement_results.append(
-            {
-                "statement": "SHUTDOWN ABORT",
-                "status": "ERROR",
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-        )
+    # SHUTDOWN ABORT and STARTUP are instance operations that thin mode
+    # cannot perform (DPY-3001), so they run as SQL*Plus in the container.
+    shutdown = _instance_step(target, "SHUTDOWN ABORT", "ORACLE instance shut down.")
+    statement_results.append(shutdown)
+
+    if shutdown["status"] != "OK":
         return {
             "action": "restart_standby_instance",
             "before": before,
@@ -453,19 +595,10 @@ def _execute_restart_standby_instance(params: dict[str, Any]) -> dict[str, Any]:
             ),
         }
 
-    try:
-        connection = _standby_connection(prelim=True)
-        connection.startup()
-        connection.close()
-        statement_results.append({"statement": "STARTUP", "status": "OK"})
-    except Exception as exc:  # noqa: BLE001
-        statement_results.append(
-            {
-                "statement": "STARTUP",
-                "status": "ERROR",
-                "error": f"{type(exc).__name__}: {exc}",
-            }
-        )
+    startup = _instance_step(target, "STARTUP MOUNT", "Database mounted.")
+    statement_results.append(startup)
+
+    if startup["status"] != "OK":
         return {
             "action": "restart_standby_instance",
             "before": before,
