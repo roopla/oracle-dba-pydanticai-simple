@@ -7,6 +7,7 @@ execute_remediation is deliberately NOT exposed - nothing reachable
 through this server can change the database.
 """
 
+import os
 from typing import Any
 
 from fastmcp import FastMCP
@@ -454,8 +455,12 @@ async def get_monitor_summary(
 
 
 if __name__ == "__main__":
+    # Loopback by default: the server has no authentication of its own, and
+    # its tools read the whole database. Bind wider only behind a network
+    # control that restricts who can reach it.
     mcp.run(
         transport="http",
-        host="127.0.0.1",
-        port=9000,
+        host=os.environ.get("MCP_HOST", "127.0.0.1"),
+        port=int(os.environ.get("MCP_PORT", "9000")),
+        path=os.environ.get("MCP_PATH", "/mcp"),
     )
