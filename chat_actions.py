@@ -138,55 +138,107 @@ def build_actions(sql_ids: list[str], issues: list[dict]) -> list[cl.Action]:
     return actions
 
 
+def _card_ids(plan: dict[str, Any], card: str) -> dict[str, str]:
+    """Known button ids for one card.
+
+    Known ids instead of Chainlit's random ones: public/custom.css styles
+    the buttons by id prefix, and the handlers use them to remove buttons
+    - both of a card's own, and those of alternative cards.
+    """
+    approve_prefix = "approve" if plan.get("reversible") else "approve-irreversible"
+    return {
+        "approve_remediation": f"{approve_prefix}-{card}",
+        "reject_remediation": f"reject-{card}",
+    }
+
+
 async def send_approval_cards(plans: list[dict[str, Any]]) -> None:
-    """Render one approve/reject card per proposed remediation."""
-    for plan in plans:
+    """Render one approve/reject card per proposed remediation.
+
+    Plans that share an alternative_group are options for the same problem
+    (for example autoextend vs. add a datafile). They are labelled
+    "Option n of m", and approving one withdraws the others, so two fixes
+    for one problem cannot both be run from the same proposal.
+    """
+    cards = [
+        {
+            "plan": plan,
+            "card": uuid.uuid4().hex,
+            # Pre-set message ids, so each card can refer to its siblings'
+            # messages before they are sent.
+            "message_id": str(uuid.uuid4()),
+        }
+        for plan in plans
+    ]
+    for entry in cards:
+        entry["card_ids"] = _card_ids(entry["plan"], entry["card"])
+
+    groups: dict[str, list[dict[str, Any]]] = {}
+    for entry in cards:
+        group = entry["plan"].get("alternative_group")
+        if group:
+            groups.setdefault(group, []).append(entry)
+
+    for entry in cards:
+        plan = entry["plan"]
         statements = plan.get("statements") or []
         statement_block = "\n".join(str(s) + ";" for s in statements)
         params = plan.get("params") or {}
 
+        siblings = groups.get(plan.get("alternative_group") or "", [entry])
+        option = (
+            f"Option {siblings.index(entry) + 1} of {len(siblings)}: "
+            if len(siblings) > 1
+            else ""
+        )
+        alternatives = [
+            {"message_id": other["message_id"], "card_ids": other["card_ids"]}
+            for other in siblings
+            if other is not entry
+        ]
+
         reversible = (
             "Reversible" if plan.get("reversible") else "**NOT reversible**"
         )
+        choose_one = (
+            "_This is one of several alternatives. Approving it withdraws "
+            "the others._\n\n"
+            if alternatives
+            else ""
+        )
 
         body = (
-            f"### Proposed action: `{plan.get('action')}`\n\n"
+            f"### {option}Proposed action: `{plan.get('action')}`\n\n"
             f"{plan.get('description', '')}\n\n"
             f"**Target:** {plan.get('target', 'unknown')}  \n"
             f"**Parameters:** `{json.dumps(params, default=str)}`  \n"
             f"**{reversible}**\n\n"
             f"**What will run:**\n```sql\n{statement_block}\n```\n\n"
             f"**Impact:** {plan.get('impact', '')}\n\n"
+            f"{choose_one}"
             f"_Nothing has run yet. This executes only if you approve._"
         )
 
-        # Known ids instead of Chainlit's random ones: public/custom.css
-        # styles the buttons by id prefix, and each handler uses card_ids
-        # to remove BOTH buttons, so a card cannot be approved and then
-        # rejected (or vice versa).
-        card = uuid.uuid4().hex
-        approve_prefix = (
-            "approve" if plan.get("reversible") else "approve-irreversible"
-        )
-        card_ids = {
-            "approve_remediation": f"{approve_prefix}-{card}",
-            "reject_remediation": f"reject-{card}",
+        payload = {
+            "plan": plan,
+            "card_ids": entry["card_ids"],
+            "alternatives": alternatives,
         }
-        payload = {"plan": plan, "card_ids": card_ids}
 
         await cl.Message(
+            id=entry["message_id"],
             content=body,
             author="approval",
             actions=[
                 cl.Action(
-                    id=card_ids["approve_remediation"],
+                    id=entry["card_ids"]["approve_remediation"],
                     name="approve_remediation",
                     payload=payload,
                     label=f"Approve and run {plan.get('action')}",
                     icon="play",
                 ),
                 cl.Action(
-                    id=card_ids["reject_remediation"],
+                    id=entry["card_ids"]["reject_remediation"],
                     name="reject_remediation",
                     payload=payload,
                     label="Reject",
@@ -194,6 +246,16 @@ async def send_approval_cards(plans: list[dict[str, Any]]) -> None:
                 ),
             ],
         ).send()
+
+
+async def _remove_buttons(card_ids: dict[str, str], message_id: str | None) -> None:
+    for name, action_id in card_ids.items():
+        await cl.Action(
+            id=action_id,
+            name=name,
+            payload={},
+            forId=message_id,
+        ).remove()
 
 
 async def _retire_card(action: cl.Action) -> None:
@@ -205,13 +267,17 @@ async def _retire_card(action: cl.Action) -> None:
         await action.remove()
         return
 
-    for name, action_id in card_ids.items():
-        await cl.Action(
-            id=action_id,
-            name=name,
-            payload={},
-            forId=action.forId,
-        ).remove()
+    await _remove_buttons(card_ids, action.forId)
+
+
+async def _withdraw_alternatives(action: cl.Action) -> int:
+    """Remove the buttons of every alternative to an approved card."""
+    alternatives = action.payload.get("alternatives") or []
+
+    for other in alternatives:
+        await _remove_buttons(other["card_ids"], other["message_id"])
+
+    return len(alternatives)
 
 
 # --------------------------------------------------------------------------
@@ -319,11 +385,21 @@ async def on_approve_remediation(action: cl.Action) -> None:
     requested_at = now_iso()
 
     # Remove the buttons first so a slow action cannot be double-clicked,
-    # and so Reject cannot be clicked after it has already run.
+    # and so Reject cannot be clicked after it has already run. Approving
+    # one option also withdraws its alternatives.
     await _retire_card(action)
+    withdrawn = await _withdraw_alternatives(action)
 
+    withdrawn_note = (
+        f" The other {withdrawn} option(s) for this problem were withdrawn."
+        if withdrawn
+        else ""
+    )
     progress = cl.Message(
-        content=f"Running `{action_name}`... this can take up to 90 seconds.",
+        content=(
+            f"Running `{action_name}`... this can take up to 90 seconds."
+            f"{withdrawn_note}"
+        ),
         author="system",
     )
     await progress.send()

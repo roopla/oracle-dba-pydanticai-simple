@@ -34,6 +34,7 @@ from oracle_core.queries_advanced import (
 from oracle_core.remediation import (
     list_actions as query_remediation_actions,
     plan_remediation as query_plan_remediation,
+    plan_tablespace_options as query_tablespace_options,
 )
 
 
@@ -316,6 +317,10 @@ def propose_remediation(
     action the user did not ask about unless the diagnosis clearly calls
     for it.
 
+    For a full tablespace, use propose_tablespace_remediation instead, so
+    the human can choose between the fixes. Use this tool for a tablespace
+    action only when the user asked for that specific action.
+
     Args:
         action: Action name from list_remediation_actions.
         params: Action parameters. Validated against the action's schema;
@@ -326,6 +331,44 @@ def propose_remediation(
     outcome - nothing has run yet.
     """
     return query_plan_remediation(action, params)
+
+
+@mcp.tool
+def propose_tablespace_remediation(
+    pdb_name: str,
+    tablespace_name: str,
+    size_mb: int | None = None,
+    next_mb: int | None = None,
+    max_mb: int | None = None,
+) -> dict[str, Any]:
+    """Prepare the alternative fixes for a full tablespace. Executes NOTHING.
+
+    Use this for any tablespace that is full or near its maximum size, or
+    for ORA-1653/ORA-1654 "unable to extend" errors. It plans both
+    enable_tablespace_autoextend and add_tablespace_datafile, and the chat
+    shows each as its own approval card so the HUMAN chooses. Approving
+    one withdraws the other. An option that does not apply is returned
+    under unavailable with the reason - pass that reason on.
+
+    Args:
+        pdb_name: PDB holding the tablespace, such as ORCLPDB1.
+        tablespace_name: The tablespace to fix.
+        size_mb: Optional initial size for the new datafile option.
+        next_mb: Optional autoextend increment for both options.
+        max_mb: Optional MAXSIZE per datafile for both options.
+
+    After calling this, briefly compare the options for the user (for
+    example: autoextend is reversible and allocates nothing up front; a
+    new datafile allocates space immediately and cannot be undone) and
+    let them pick. Do not pick for them, and do not claim anything ran.
+    """
+    return query_tablespace_options(
+        pdb_name=pdb_name,
+        tablespace_name=tablespace_name,
+        size_mb=size_mb,
+        next_mb=next_mb,
+        max_mb=max_mb,
+    )
 
 
 @mcp.tool

@@ -102,6 +102,32 @@ class TablespaceRemediationTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.plan("add_tablespace_datafile", size_mb=500, max_mb=100)
 
+    # --- options, side by side --------------------------------------------
+
+    def test_options_offers_both_fixes_as_one_group(self):
+        self.files.return_value = [_file("space_ts01.dbf", 10)]
+        result = remediation.plan_tablespace_options("orclpdb1", "space_ts", size_mb=50)
+        actions = [p["action"] for p in result["options"]]
+        self.assertEqual(actions, ["enable_tablespace_autoextend", "add_tablespace_datafile"])
+        self.assertEqual(
+            {p["alternative_group"] for p in result["options"]},
+            {"tablespace:ORCLPDB1:SPACE_TS"},
+        )
+        self.assertEqual(result["options"][1]["params"]["size_mb"], 50)
+        self.assertEqual(result["unavailable"], {})
+
+    def test_options_lists_an_inapplicable_fix_with_its_reason(self):
+        # Already autoextends to the limit: only a new datafile helps.
+        self.files.return_value = [_file("a.dbf", 10, autoextend="YES", max_mb=32767)]
+        result = remediation.plan_tablespace_options("ORCLPDB1", "SPACE_TS")
+        self.assertEqual([p["action"] for p in result["options"]], ["add_tablespace_datafile"])
+        self.assertIn("Nothing to do", result["unavailable"]["enable_tablespace_autoextend"])
+
+    def test_options_raise_when_no_fix_applies(self):
+        self.files.return_value = [_file("big.dbf", 10, autoextend="YES", max_mb=32767, bigfile="YES")]
+        with self.assertRaisesRegex(ValueError, "No tablespace fix applies"):
+            remediation.plan_tablespace_options("ORCLPDB1", "SPACE_TS")
+
     # --- execution --------------------------------------------------------
 
     def test_execution_refuses_when_statements_changed_since_approval(self):

@@ -1097,6 +1097,62 @@ def plan_remediation(
     return _get_action(action).planner(dict(params or {})).as_dict()
 
 
+# The tablespace actions offered side by side, gentlest first.
+TABLESPACE_OPTIONS = ("enable_tablespace_autoextend", "add_tablespace_datafile")
+
+
+def plan_tablespace_options(
+    pdb_name: str,
+    tablespace_name: str,
+    size_mb: int | None = None,
+    next_mb: int | None = None,
+    max_mb: int | None = None,
+) -> dict[str, Any]:
+    """Plan every applicable tablespace fix, for a human to choose one.
+
+    Executes nothing. Each returned plan carries the same
+    alternative_group, which the chat uses to withdraw the other options
+    once one is approved. An option that does not apply is listed under
+    unavailable with the reason instead of being dropped silently.
+    """
+    base: dict[str, Any] = {"pdb_name": pdb_name, "tablespace_name": tablespace_name}
+    for key, value in (("next_mb", next_mb), ("max_mb", max_mb)):
+        if value is not None:
+            base[key] = value
+
+    options: list[dict[str, Any]] = []
+    unavailable: dict[str, str] = {}
+
+    for action in TABLESPACE_OPTIONS:
+        params = dict(base)
+        if action == "add_tablespace_datafile" and size_mb is not None:
+            params["size_mb"] = size_mb
+        try:
+            options.append(plan_remediation(action, params))
+        except ValueError as exc:
+            unavailable[action] = str(exc)
+
+    if not options:
+        raise ValueError(
+            "No tablespace fix applies: "
+            + "; ".join(f"{name}: {reason}" for name, reason in unavailable.items())
+        )
+
+    first = options[0]["params"]
+    group = f"tablespace:{first['pdb_name']}:{first['tablespace_name']}"
+    for plan in options:
+        plan["alternative_group"] = group
+
+    return {
+        "options": options,
+        "unavailable": unavailable,
+        "note": (
+            "These are alternatives. The human approves at most one; "
+            "approving one withdraws the others."
+        ),
+    }
+
+
 def execute_remediation(
     action: str,
     params: dict[str, Any] | None = None,
