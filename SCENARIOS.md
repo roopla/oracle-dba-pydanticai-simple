@@ -18,7 +18,7 @@ with commits. The program refuses to run unless `.env.loadgen` contains
 
    | Setting | Value |
    | --- | --- |
-   | `LOADGEN_ORACLE_USER` | Schema the scenarios create and write to (default `LOADGEN`) |
+   | `LOADGEN_ORACLE_USER` | Optional. Schema the scenarios create and write to (default `LOADGEN`); never falls back to the agent's account |
    | `LOADGEN_ORACLE_PASSWORD` | Its password; `prepare` creates the user with it |
    | `LAB_SCENARIOS_ENABLED` | `true`, for this lab or test database only |
    | `SCENARIO_ADMIN_USER` / `SCENARIO_ADMIN_PASSWORD` | A DBA login for setup work: creating the user and tablespaces, `ALTER SYSTEM` log switches. Leave empty to use `ORACLE_USER` from `.env.mcp`, which works only if that account is a DBA (the least-privilege agent account from DEPLOYMENT.md is not) |

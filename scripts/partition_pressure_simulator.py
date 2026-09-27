@@ -99,13 +99,10 @@ def admin_connection(pdb: str) -> Any:
 
 
 def loadgen_connection(pdb: str) -> Any:
-    user = os.environ.get("LOADGEN_ORACLE_USER")
+    user = os.environ.get("LOADGEN_ORACLE_USER") or "LOADGEN"
     password = os.environ.get("LOADGEN_ORACLE_PASSWORD")
-    if not user or not password:
-        sys.exit(
-            "LOADGEN_ORACLE_USER / LOADGEN_ORACLE_PASSWORD are not set. "
-            "Load .env.loadgen (see scripts/ingest_simulator_user.sql)."
-        )
+    if not password:
+        sys.exit("LOADGEN_ORACLE_PASSWORD is not set. Load .env.loadgen.")
     connection = oracledb.connect(user=user, password=password, dsn=build_dsn(pdb))
     connection.module = "partition_pressure_sim"
     return connection

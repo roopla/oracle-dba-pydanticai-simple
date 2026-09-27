@@ -221,10 +221,11 @@ with `uv run --env-file`. Values below are examples.
 
 ### Settings that do nothing
 
-The example files contain a few settings the code does not read:
+Older `.env` files may still contain settings the code does not read:
 `LLM_PROVIDER`, `OPENWEBUI_STRICT_TOOLS`, `AGENT_API_HOST`,
 `AGENT_API_PORT`, `AUDIT_LOG_DIR`, `AUDIT_LOG_FINAL_ANSWER`,
-`MCP_TRANSPORT`, `DB_DEBUG`. Changing them has no effect.
+`MCP_TRANSPORT`, `DB_DEBUG`, `REQUESTS_CA_BUNDLE`. Changing them has no
+effect; the current templates no longer include them.
 
 ## 7. Run it
 

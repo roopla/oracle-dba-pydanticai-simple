@@ -207,7 +207,9 @@ def tail(path: Path, lines: int = 15) -> str:
 
 
 def oracle_user() -> str:
-    return os.environ.get("LOADGEN_ORACLE_USER") or os.environ.get("ORACLE_USER", "")
+    # The load schema, never the agent's own account (ORACLE_USER): falling
+    # back to that would run the load as the monitoring login.
+    return os.environ.get("LOADGEN_ORACLE_USER") or "LOADGEN"
 
 
 def guard_privileged_user(args: argparse.Namespace) -> None:
@@ -266,11 +268,13 @@ def connect(args: argparse.Namespace, action: str) -> Any:
     from oracle_core.db import build_dsn
 
     settings = get_settings()
-    user = os.environ.get("LOADGEN_ORACLE_USER") or settings.oracle_user
-    password = (
-        os.environ.get("LOADGEN_ORACLE_PASSWORD")
-        or settings.oracle_password.get_secret_value()
-    )
+    user = oracle_user()
+    password = os.environ.get("LOADGEN_ORACLE_PASSWORD")
+    if not password:
+        sys.exit(
+            "LOADGEN_ORACLE_PASSWORD is not set. Load .env.loadgen "
+            "(the load schema's own password, not the agent's)."
+        )
     database = args.database or settings.oracle_default_pdb_name
     connection = oracledb.connect(
         user=user,
