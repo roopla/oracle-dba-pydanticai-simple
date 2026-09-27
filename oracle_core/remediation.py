@@ -35,11 +35,24 @@ restart_standby_instance
 
 Both poll for MRP0 after running rather than reading state once, because
 MRP0 startup can take longer than the statement's own return.
+
+enable_tablespace_autoextend
+    Turns on AUTOEXTEND (or raises MAXSIZE) for a PDB tablespace's
+    datafiles on the primary. Reversible. Try this first for a full
+    tablespace.
+
+add_tablespace_datafile
+    Adds a datafile next to the tablespace's existing ones. Not reversible.
+
+Both tablespace actions derive their SQL from the dictionary (file names,
+paths), so they set pin_statements: execute_remediation re-plans and
+refuses unless the statements are exactly the ones the human approved.
 """
 
 from __future__ import annotations
 
 import os
+import posixpath
 import re
 import shlex
 import time
@@ -48,6 +61,10 @@ from typing import Any, Callable
 
 import oracledb
 import paramiko
+
+from oracle_core.config import get_settings
+from oracle_core.db import execute_statements, query
+from oracle_core.queries import validate_pdb_name
 
 
 # Hard ceiling per database round trip, in milliseconds. Without this a
@@ -103,6 +120,14 @@ class RemediationAction:
     reversible: bool
     planner: Callable[[dict[str, Any]], ActionPlan]
     executor: Callable[[dict[str, Any]], dict[str, Any]]
+    # Parameter guide for the agent, returned by list_actions().
+    params_help: str = "Takes no parameters."
+    # When True, execution re-plans and refuses unless the statements are
+    # exactly those the human approved. Right for actions whose SQL is
+    # derived from database state (file names, paths); wrong for actions
+    # that deliberately adapt to state at run time (restart_redo_apply
+    # decides then whether a CANCEL is needed).
+    pin_statements: bool = False
 
 
 # --------------------------------------------------------------------------
@@ -651,6 +676,328 @@ def _execute_restart_standby_instance(params: dict[str, Any]) -> dict[str, Any]:
 
 
 # --------------------------------------------------------------------------
+# Tablespace capacity (primary, one PDB)
+# --------------------------------------------------------------------------
+#
+# DDL cannot take bind variables, so identifiers and file names are put into
+# the SQL text. Neither comes from the model: the tablespace name must match
+# a strict pattern AND exist in the dictionary, and every file name or path
+# is read from cdb_data_files. Sizes are integers inside hard bounds.
+
+_TABLESPACE_NAME = re.compile(r"^[A-Z][A-Z0-9_$#]{0,127}$")
+_MB = 1024 * 1024
+
+# A smallfile datafile holds at most 4,194,303 blocks.
+_SMALLFILE_MAX_BLOCKS = 4_194_303
+
+_NEXT_MB_RANGE = (1, 1024)
+_SIZE_MB_RANGE = (16, 32767)
+_DEFAULT_NEXT_MB = 64
+_DEFAULT_MAX_MB = 2048
+_DEFAULT_SIZE_MB = 100
+
+_TABLESPACE_PARAMS_HELP = (
+    "pdb_name (required, e.g. ORCLPDB1; validated against the live PDB "
+    "list), tablespace_name (required; must be an existing PERMANENT "
+    "tablespace in that PDB), next_mb (optional autoextend increment, "
+    f"{_NEXT_MB_RANGE[0]}-{_NEXT_MB_RANGE[1]}, default {_DEFAULT_NEXT_MB}), "
+    f"max_mb (optional MAXSIZE per datafile, default {_DEFAULT_MAX_MB}, "
+    "capped at the smallfile limit)"
+)
+
+
+def _sql_string(value: str) -> str:
+    """Quote a dictionary-sourced value as an Oracle string literal."""
+    return "'" + value.replace("'", "''") + "'"
+
+
+def _int_param(
+    params: dict[str, Any],
+    key: str,
+    default: int,
+    low: int,
+    high: int,
+) -> int:
+    """Read an integer parameter, refusing anything outside [low, high]."""
+    raw = params.get(key, default)
+
+    if isinstance(raw, bool) or not isinstance(raw, (int, str)):
+        raise ValueError(f"{key} must be a whole number of MB")
+
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(f"{key} must be a whole number of MB") from exc
+
+    if not low <= value <= high:
+        raise ValueError(f"{key} must be between {low} and {high} MB")
+
+    return value
+
+
+def _tablespace_target(params: dict[str, Any]) -> tuple[str, str]:
+    """Validate and normalise pdb_name and tablespace_name."""
+    pdb_name = validate_pdb_name(str(params.get("pdb_name") or ""))
+    tablespace = str(params.get("tablespace_name") or "").strip().upper()
+
+    if not _TABLESPACE_NAME.match(tablespace):
+        raise ValueError(f"{tablespace!r} is not a valid tablespace name")
+
+    return pdb_name, tablespace
+
+
+def _tablespace_files(pdb_name: str, tablespace: str) -> list[dict[str, Any]]:
+    """Datafiles of one PERMANENT tablespace, straight from the dictionary."""
+    rows = query(
+        """
+        SELECT df.file_id,
+               df.file_name,
+               df.autoextensible,
+               df.bytes,
+               df.maxbytes,
+               ts.contents,
+               ts.bigfile,
+               ts.block_size
+        FROM cdb_data_files df
+        JOIN v$containers c
+          ON c.con_id = df.con_id
+        JOIN cdb_tablespaces ts
+          ON ts.con_id = df.con_id
+         AND ts.tablespace_name = df.tablespace_name
+        WHERE UPPER(c.name) = :pdb_name
+          AND df.tablespace_name = :tablespace
+        ORDER BY df.file_id
+        """,
+        database_name=get_settings().oracle_cdb_name,
+        binds={"pdb_name": pdb_name, "tablespace": tablespace},
+    )
+
+    if not rows:
+        raise ValueError(f"Tablespace {tablespace} does not exist in {pdb_name}")
+
+    if rows[0]["contents"] != "PERMANENT":
+        raise ValueError(
+            f"{tablespace} is a {rows[0]['contents']} tablespace; only "
+            "PERMANENT tablespaces are handled by this action"
+        )
+
+    return rows
+
+
+def _file_limit_mb(files: list[dict[str, Any]]) -> int:
+    """Largest MAXSIZE a smallfile datafile of this tablespace can have."""
+    block_size = int(files[0]["block_size"])
+    return min(_SIZE_MB_RANGE[1], block_size * _SMALLFILE_MAX_BLOCKS // _MB)
+
+
+def _mb(value: Any) -> int:
+    return int(value or 0) // _MB
+
+
+def _files_summary(files: list[dict[str, Any]]) -> str:
+    return "; ".join(
+        f"{posixpath.basename(f['file_name'])} {_mb(f['bytes'])} MB, "
+        + (
+            f"autoextend to {_mb(f['maxbytes'])} MB"
+            if f["autoextensible"] == "YES"
+            else "fixed size"
+        )
+        for f in files
+    )
+
+
+_DATAGUARD_NOTE = (
+    "Runs on the primary; with standby_file_management=AUTO the change "
+    "reaches the physical standby through redo. The filesystem is not "
+    "checked: make sure it has room for the new maximum."
+)
+
+
+# --- enable_tablespace_autoextend ------------------------------------------
+
+
+def _needs_autoextend(file: dict[str, Any], max_mb: int) -> bool:
+    """Fixed-size files, and autoextensible ones capped below max_mb."""
+    return file["autoextensible"] != "YES" or _mb(file["maxbytes"]) < max_mb
+
+
+def _plan_enable_tablespace_autoextend(params: dict[str, Any]) -> ActionPlan:
+    pdb_name, tablespace = _tablespace_target(params)
+    files = _tablespace_files(pdb_name, tablespace)
+
+    limit_mb = _file_limit_mb(files)
+    next_mb = _int_param(params, "next_mb", _DEFAULT_NEXT_MB, *_NEXT_MB_RANGE)
+    max_mb = _int_param(
+        params, "max_mb", min(_DEFAULT_MAX_MB, limit_mb), _SIZE_MB_RANGE[0], limit_mb
+    )
+
+    targets = [f for f in files if _needs_autoextend(f, max_mb)]
+
+    if not targets:
+        raise ValueError(
+            f"Nothing to do: every datafile of {tablespace} already "
+            f"autoextends to at least {max_mb} MB ({_files_summary(files)})"
+        )
+
+    too_small = [f for f in targets if _mb(f["bytes"]) >= max_mb]
+    if too_small:
+        raise ValueError(
+            f"max_mb {max_mb} is not above the current size of "
+            + ", ".join(
+                f"{posixpath.basename(f['file_name'])} ({_mb(f['bytes'])} MB)"
+                for f in too_small
+            )
+        )
+
+    statements = [
+        f"ALTER DATABASE DATAFILE {_sql_string(f['file_name'])} "
+        f"AUTOEXTEND ON NEXT {next_mb}M MAXSIZE {max_mb}M"
+        for f in targets
+    ]
+
+    return ActionPlan(
+        action="enable_tablespace_autoextend",
+        description=(
+            f"Let {tablespace} in {pdb_name} grow on demand: autoextend "
+            f"{len(targets)} datafile(s) in steps of {next_mb} MB up to "
+            f"{max_mb} MB each."
+        ),
+        statements=statements,
+        impact=(
+            f"Current files: {_files_summary(files)}. No new files are "
+            "created and nothing is allocated up front; files grow only as "
+            "space is used. Reversible with AUTOEXTEND OFF, though space a "
+            f"file has already grown into stays allocated. {_DATAGUARD_NOTE}"
+        ),
+        target=f"primary {pdb_name} tablespace {tablespace}",
+        reversible=True,
+        params={
+            "pdb_name": pdb_name,
+            "tablespace_name": tablespace,
+            "next_mb": next_mb,
+            "max_mb": max_mb,
+        },
+    )
+
+
+def _execute_enable_tablespace_autoextend(params: dict[str, Any]) -> dict[str, Any]:
+    plan = _plan_enable_tablespace_autoextend(params)
+    pdb_name = plan.params["pdb_name"]
+    tablespace = plan.params["tablespace_name"]
+    max_mb = plan.params["max_mb"]
+
+    before = _tablespace_files(pdb_name, tablespace)
+    touched = {f["file_name"] for f in before if _needs_autoextend(f, max_mb)}
+
+    statement_results = execute_statements(plan.statements, database_name=pdb_name)
+    after = _tablespace_files(pdb_name, tablespace)
+
+    succeeded = all(r["status"] == "OK" for r in statement_results) and all(
+        not _needs_autoextend(f, max_mb) for f in after if f["file_name"] in touched
+    )
+
+    return {
+        "action": "enable_tablespace_autoextend",
+        "before": _files_summary(before),
+        "statements": statement_results,
+        "after": _files_summary(after),
+        "succeeded": succeeded,
+    }
+
+
+# --- add_tablespace_datafile -----------------------------------------------
+
+
+def _next_datafile_path(files: list[dict[str, Any]], tablespace: str) -> str:
+    """A new file next to the existing ones, with an unused name."""
+    directory = posixpath.dirname(files[0]["file_name"])
+    existing = {posixpath.basename(f["file_name"]).lower() for f in files}
+
+    number = len(files) + 1
+    while f"{tablespace.lower()}_{number:02d}.dbf" in existing:
+        number += 1
+
+    return posixpath.join(directory, f"{tablespace.lower()}_{number:02d}.dbf")
+
+
+def _plan_add_tablespace_datafile(params: dict[str, Any]) -> ActionPlan:
+    pdb_name, tablespace = _tablespace_target(params)
+    files = _tablespace_files(pdb_name, tablespace)
+
+    if files[0]["bigfile"] == "YES":
+        raise ValueError(
+            f"{tablespace} is a bigfile tablespace, which holds exactly one "
+            "datafile; use enable_tablespace_autoextend instead"
+        )
+
+    limit_mb = _file_limit_mb(files)
+    size_mb = _int_param(
+        params, "size_mb", _DEFAULT_SIZE_MB, _SIZE_MB_RANGE[0], limit_mb
+    )
+    next_mb = _int_param(params, "next_mb", _DEFAULT_NEXT_MB, *_NEXT_MB_RANGE)
+    max_mb = _int_param(
+        params,
+        "max_mb",
+        max(size_mb, min(_DEFAULT_MAX_MB, limit_mb)),
+        size_mb,
+        limit_mb,
+    )
+
+    path = _next_datafile_path(files, tablespace)
+    statement = (
+        f'ALTER TABLESPACE "{tablespace}" ADD DATAFILE {_sql_string(path)} '
+        f"SIZE {size_mb}M AUTOEXTEND ON NEXT {next_mb}M MAXSIZE {max_mb}M"
+    )
+
+    return ActionPlan(
+        action="add_tablespace_datafile",
+        description=(
+            f"Add a {size_mb} MB datafile to {tablespace} in {pdb_name}, "
+            f"autoextending in {next_mb} MB steps up to {max_mb} MB."
+        ),
+        statements=[statement],
+        impact=(
+            f"Current files: {_files_summary(files)}. Creates {path} and "
+            f"allocates {size_mb} MB on disk immediately. Not reversible in "
+            "practice: a datafile can only be dropped while it holds no "
+            f"data. {_DATAGUARD_NOTE}"
+        ),
+        target=f"primary {pdb_name} tablespace {tablespace}",
+        reversible=False,
+        params={
+            "pdb_name": pdb_name,
+            "tablespace_name": tablespace,
+            "size_mb": size_mb,
+            "next_mb": next_mb,
+            "max_mb": max_mb,
+        },
+    )
+
+
+def _execute_add_tablespace_datafile(params: dict[str, Any]) -> dict[str, Any]:
+    plan = _plan_add_tablespace_datafile(params)
+    pdb_name = plan.params["pdb_name"]
+    tablespace = plan.params["tablespace_name"]
+
+    before = _tablespace_files(pdb_name, tablespace)
+    statement_results = execute_statements(plan.statements, database_name=pdb_name)
+    after = _tablespace_files(pdb_name, tablespace)
+
+    succeeded = (
+        all(r["status"] == "OK" for r in statement_results)
+        and len(after) == len(before) + 1
+    )
+
+    return {
+        "action": "add_tablespace_datafile",
+        "before": _files_summary(before),
+        "statements": statement_results,
+        "after": _files_summary(after),
+        "succeeded": succeeded,
+    }
+
+
+# --------------------------------------------------------------------------
 # Registry
 # --------------------------------------------------------------------------
 
@@ -680,6 +1027,40 @@ ACTIONS: dict[str, RemediationAction] = {
         planner=_plan_restart_standby_instance,
         executor=_execute_restart_standby_instance,
     ),
+    "enable_tablespace_autoextend": RemediationAction(
+        name="enable_tablespace_autoextend",
+        description=(
+            "Let a tablespace grow on demand by turning on AUTOEXTEND (or "
+            "raising MAXSIZE) for its datafiles. Try this FIRST for a "
+            "tablespace that is full or near its maximum size, or for "
+            "ORA-1653/ORA-1654 'unable to extend' errors. Creates no files "
+            "and allocates nothing up front. Refuses when every datafile "
+            "already autoextends far enough."
+        ),
+        reversible=True,
+        planner=_plan_enable_tablespace_autoextend,
+        executor=_execute_enable_tablespace_autoextend,
+        params_help=_TABLESPACE_PARAMS_HELP,
+        pin_statements=True,
+    ),
+    "add_tablespace_datafile": RemediationAction(
+        name="add_tablespace_datafile",
+        description=(
+            "Add a datafile to a tablespace, next to its existing files. Use "
+            "when its datafiles already autoextend to the smallfile limit, "
+            "or when the user asks for a new datafile. Allocates size_mb on "
+            "disk immediately. Not reversible."
+        ),
+        reversible=False,
+        planner=_plan_add_tablespace_datafile,
+        executor=_execute_add_tablespace_datafile,
+        params_help=(
+            _TABLESPACE_PARAMS_HELP
+            + f", size_mb (optional initial size, default {_DEFAULT_SIZE_MB}; "
+            "max_mb must be at least size_mb)"
+        ),
+        pin_statements=True,
+    ),
 }
 
 
@@ -689,6 +1070,7 @@ def list_actions() -> list[dict[str, Any]]:
             "action": a.name,
             "description": a.description,
             "reversible": a.reversible,
+            "params": a.params_help,
         }
         for a in ACTIONS.values()
     ]
@@ -717,10 +1099,33 @@ def plan_remediation(
 def execute_remediation(
     action: str,
     params: dict[str, Any] | None = None,
+    approved_statements: list[str] | None = None,
 ) -> dict[str, Any]:
     """Run an allowlisted action. Callers must obtain human approval first.
 
     Deliberately not exposed over MCP: nothing the model can call reaches
     this function.
+
+    approved_statements are the statements the human saw on the approval
+    card. For actions with pin_statements, execution re-plans and refuses
+    if the fresh statements differ - the database changed after approval,
+    so what would run is no longer what was approved.
     """
-    return _get_action(action).executor(dict(params or {}))
+    definition = _get_action(action)
+    clean_params = dict(params or {})
+
+    if definition.pin_statements:
+        if approved_statements is None:
+            raise RuntimeError(
+                f"{definition.name} requires the approved statements so it "
+                "can confirm they are still what would run"
+            )
+        fresh = definition.planner(clean_params).statements
+        if list(approved_statements) != fresh:
+            raise RuntimeError(
+                "The database changed after approval, so the statements that "
+                "would run now differ from the approved ones. Nothing was "
+                "run; ask for a fresh proposal."
+            )
+
+    return definition.executor(clean_params)

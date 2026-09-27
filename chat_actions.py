@@ -329,7 +329,13 @@ async def on_approve_remediation(action: cl.Action) -> None:
     await progress.send()
 
     try:
-        result = await cl.make_async(execute_remediation)(action_name, params)
+        # The statements shown on the card: actions that derive their SQL
+        # from database state refuse to run if it no longer matches.
+        result = await cl.make_async(execute_remediation)(
+            action_name,
+            params,
+            approved_statements=list(plan.get("statements") or []),
+        )
     except Exception as exc:  # noqa: BLE001
         error_text = f"{type(exc).__name__}: {exc}"
 

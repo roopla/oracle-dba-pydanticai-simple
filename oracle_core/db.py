@@ -84,6 +84,49 @@ def query(
             return _rows_from_cursor(cursor)
 
 
+def execute_statements(
+    statements: list[str],
+    *,
+    database_name: str,
+) -> list[dict[str, Any]]:
+    """Run statements (typically DDL) in order on one database or PDB.
+
+    Stops at the first failure: later statements usually depend on
+    earlier ones, and a partial run is easier to reason about than one
+    that pressed on. Each statement is reported as OK, ERROR or SKIPPED.
+    DDL commits implicitly, so there is nothing to roll back.
+    """
+    settings = get_settings()
+    dsn = build_dsn(database_name)
+    results: list[dict[str, Any]] = []
+
+    with oracledb.connect(
+        user=settings.oracle_user,
+        password=settings.oracle_password.get_secret_value(),
+        dsn=dsn,
+    ) as connection:
+        with connection.cursor() as cursor:
+            failed = False
+            for statement in statements:
+                if failed:
+                    results.append({"statement": statement, "status": "SKIPPED"})
+                    continue
+                try:
+                    cursor.execute(statement)
+                    results.append({"statement": statement, "status": "OK"})
+                except Exception as exc:  # noqa: BLE001 - report per statement
+                    failed = True
+                    results.append(
+                        {
+                            "statement": statement,
+                            "status": "ERROR",
+                            "error": f"{type(exc).__name__}: {exc}",
+                        }
+                    )
+
+    return results
+
+
 def query_dsn(
     sql: str,
     *,
