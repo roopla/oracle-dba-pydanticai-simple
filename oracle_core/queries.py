@@ -249,7 +249,14 @@ def get_active_sessions(
 def get_blocking_sessions(
     limit: int = 20,
 ) -> list[dict[str, Any]]:
-    """Return sessions that are currently blocked by another session."""
+    """Return user sessions currently blocked by another user session.
+
+    V$SESSION.BLOCKING_SESSION is also set for ordinary background waits:
+    a session in 'log file sync' names LGWR as its blocker, so any
+    commit-heavy load looked like blocking - and the monitor's template
+    for a blocking incident is KILL SESSION on the blocker, which for
+    LGWR would bring the instance down. Only USER-to-USER pairs count.
+    """
     if not 1 <= limit <= 100:
         raise ValueError("limit must be between 1 and 100")
 
@@ -280,6 +287,8 @@ def get_blocking_sessions(
             LEFT JOIN v$containers c
               ON c.con_id = waiter.con_id
             WHERE waiter.blocking_session IS NOT NULL
+              AND waiter.type = 'USER'
+              AND blocker.type = 'USER'
             ORDER BY waiter.seconds_in_wait DESC
         )
         WHERE ROWNUM <= :limit

@@ -39,6 +39,22 @@ class DbaQueryTests(unittest.TestCase):
 
     @patch("oracle_core.queries.query")
     @patch("oracle_core.queries.get_settings")
+    def test_blocking_sessions_ignore_background_processes(
+        self, mock_settings, mock_query
+    ):
+        # A 'log file sync' waiter names LGWR as its blocker; that is not
+        # blocking, and killing the "blocker" would crash the instance.
+        mock_settings.return_value.oracle_cdb_name = "ORCL"
+        mock_query.return_value = []
+
+        queries.get_blocking_sessions()
+
+        sql = mock_query.call_args.args[0].lower()
+        self.assertIn("waiter.type = 'user'", sql)
+        self.assertIn("blocker.type = 'user'", sql)
+
+    @patch("oracle_core.queries.query")
+    @patch("oracle_core.queries.get_settings")
     def test_top_sql_passes_time_window_and_limit(self, mock_settings, mock_query):
         mock_settings.return_value.oracle_cdb_name = "ORCL"
         mock_query.return_value = [{"sql_id": "abc123"}]
