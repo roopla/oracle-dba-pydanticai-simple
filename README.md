@@ -13,7 +13,8 @@ known problems, but only after a human approves each change.
   The Monitor link in the chat header turns red while a critical incident is
   unacknowledged.
 - **Approved fixes**: restart redo apply or the standby instance, enable
-  tablespace autoextend, or add a datafile. The agent can only propose them;
+  tablespace autoextend, add a datafile, or drop partitions older than the
+  retention window of a table partitioned by month. The agent can only propose them;
   each runs after you click Approve on its card, and every decision is
   audited.
 
@@ -109,6 +110,7 @@ The two ignored files query a live database and expect a PDB named
 | [docker-stuff/README.md](docker-stuff/README.md) | Building the Data Guard lab: primary from a seed image, standby by RMAN duplicate (scripts `00`–`03`) |
 | [RUNBOOK.md](RUNBOOK.md) | Stopping, starting and verifying the stack. Written for an earlier lab setup, so its database and container names may not match yours. |
 | [INGEST_SIMULATOR.md](INGEST_SIMULATOR.md) | The demo load generator: modes, commands, recipes |
+| [PARTITION_PRESSURE_DEMO.md](PARTITION_PRESSURE_DEMO.md) | Partition retention under space pressure: the drop_old_partitions action and its simulator |
 | [SHARED_QUERY_LAYER.md](SHARED_QUERY_LAYER.md) | Why all SQL lives in `oracle_core/` |
 | [MONITOR_INTEGRATION.md](MONITOR_INTEGRATION.md) | How the monitor is wired into the app |
 | [MONITOR_APPROVED_SQL.md](MONITOR_APPROVED_SQL.md), [MONITOR_BAKED_DIAGNOSTICS.md](MONITOR_BAKED_DIAGNOSTICS.md) | The reviewed SQL the monitor shows and runs |

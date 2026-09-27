@@ -65,8 +65,8 @@ flowchart TB
 | Chat UI | `chat.py`, mounted at `/chat` by `main.py` | Conversation, model picker, tool steps, action buttons |
 | Approval cards | `chat_actions.py` | Renders proposed fixes, runs them only after **Approve**, writes the audit row. Alternatives share a group; approving one withdraws the rest. |
 | Agent | `agent_app/agent.py` | PydanticAI agent with the DBA instructions. Runs inside the web app process; its only toolset is the MCP server, reached over HTTP |
-| MCP server | `mcp_server/server.py`, its own process on :9000 | 15 tools: 12 read-only diagnostics (one reads the monitor's incidents), `list_remediation_actions`, and two `propose_*` tools that return plans and execute nothing |
-| Shared Oracle layer | `oracle_core/`, a library loaded by both processes | All SQL: `queries.py`, `queries_advanced.py` (ASH, Data Guard), `remediation.py` (allowlisted actions), `db.py` (python-oracledb thin connections). Reaches the standby as SYSDBA, and over SSH + `docker exec` for instance restarts. |
+| MCP server | `mcp_server/server.py`, its own process on :9000 | 16 tools: 13 read-only diagnostics (one reads the monitor's incidents, one partition retention), `list_remediation_actions`, and two `propose_*` tools that return plans and execute nothing |
+| Shared Oracle layer | `oracle_core/`, a library loaded by both processes | All SQL: `queries.py`, `queries_advanced.py` (ASH, Data Guard), `partitions.py` (monthly partition retention), `remediation.py` (allowlisted actions), `db.py` (python-oracledb thin connections). Reaches the standby as SYSDBA, and over SSH + `docker exec` for instance restarts. |
 | Monitor | `monitor/` | Poller, 6 checks, approved diagnostics, LLM recommendation, SQLite lifecycle (ACTIVE / RESOLVED), dashboard |
 | Header alert | `public/custom.js`, `public/custom.css` | Colours the Monitor link: green, amber, or solid red pulsing for an unacknowledged critical |
 | Load generator | `scripts/ingest_simulator.py` | Optional demo write load, in its own schema |
@@ -155,6 +155,7 @@ sequenceDiagram
 | `restart_standby_instance` | Standby | No | SQL*Plus on the standby host over SSH, since thin mode cannot shut down or start an instance (the current implementation runs it inside a Docker container) |
 | `enable_tablespace_autoextend` | Primary PDB tablespace | Yes | DDL in the PDB |
 | `add_tablespace_datafile` | Primary PDB tablespace | No | DDL in the PDB; the standby creates the file itself (`standby_file_management=AUTO`) |
+| `drop_old_partitions` | Primary table range-partitioned by month | No | `DROP PARTITION ... UPDATE INDEXES` in the PDB, keeping at least the current and previous month; permanently deletes the older months |
 
 Every approval and rejection is recorded in `remediation_audit` in
 `monitor.db`.
