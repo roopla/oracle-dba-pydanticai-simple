@@ -24,7 +24,7 @@ the main flows.
 
 | Part | Technology |
 | --- | --- |
-| Agent | [PydanticAI](https://ai.pydantic.dev/), OpenAI-compatible model through OpenWebUI |
+| Agent | [PydanticAI](https://ai.pydantic.dev/) with any OpenAI-compatible model endpoint |
 | Tools | [FastMCP](https://gofastmcp.com/) server over HTTP |
 | Oracle access | python-oracledb (thin mode) |
 | Web | Chainlit chat UI + FastAPI monitor, one uvicorn app (`main.py`) |
@@ -107,7 +107,7 @@ The two ignored files query a live database and expect a PDB named
 | --- | --- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Components, request and approval flow, monitor cycle, allowlisted changes |
 | [docker-stuff/README.md](docker-stuff/README.md) | Building the Data Guard lab: primary from a seed image, standby by RMAN duplicate (scripts `00`–`03`) |
-| [RUNBOOK.md](RUNBOOK.md) | Stopping, starting and verifying the stack. Written for the earlier ORCLCDB lab; database names differ from the current ORCL / ORCL_STBY setup. |
+| [RUNBOOK.md](RUNBOOK.md) | Stopping, starting and verifying the stack. Written for an earlier lab setup, so its database and container names may not match yours. |
 | [INGEST_SIMULATOR.md](INGEST_SIMULATOR.md) | The demo load generator: modes, commands, recipes |
 | [SHARED_QUERY_LAYER.md](SHARED_QUERY_LAYER.md) | Why all SQL lives in `oracle_core/` |
 | [MONITOR_INTEGRATION.md](MONITOR_INTEGRATION.md) | How the monitor is wired into the app |
