@@ -1,7 +1,7 @@
 # Architecture
 
 An Oracle DBA assistant: a chat agent that answers questions about a live
-Oracle 19c Data Guard pair using read-only tools, a background monitor that
+Oracle database, optionally with a Data Guard standby, using read-only tools, a background monitor that
 detects incidents and explains them, and a human-approval path for the few
 changes it is allowed to make.
 
@@ -31,16 +31,16 @@ flowchart TB
         mcp["MCP tools<br/>read-only + propose"]
     end
 
-    llm["OpenWebUI :3000 · gpt-5.4<br/>on the Docker host"]
+    llm["LLM<br/>OpenAI-compatible API"]
     core["oracle_core library<br/>loaded by both processes"]
 
-    subgraph lab["Oracle 19c Data Guard · Docker host 192.168.56.30"]
+    subgraph lab["Oracle Data Guard"]
         direction LR
-        pri[("ORCL primary :1523<br/>PDB ORCLPDB1")]
-        stby[("ORCL_STBY standby :1522<br/>mounted, MRP0 applying")]
+        pri[("Primary database<br/>CDB + PDBs")]
+        stby[("Physical standby<br/>mounted, redo apply")]
     end
 
-    sim["Ingest simulator<br/>demo load"]
+    sim["Load generator<br/>optional, for demos"]
 
     user --> chat
     user --> dash
@@ -55,7 +55,7 @@ flowchart TB
     poller -->|checks + diagnostics| core
     poller --> sqlite
     core -->|SQL| pri
-    core -->|SYSDBA + SSH| stby
+    core -->|SYSDBA, SSH for restarts| stby
     pri ==>|redo, ASYNC| stby
     sim -->|INSERT + COMMIT| pri
 ```
@@ -69,9 +69,9 @@ flowchart TB
 | Shared Oracle layer | `oracle_core/`, a library loaded by both processes | All SQL: `queries.py`, `queries_advanced.py` (ASH, Data Guard), `remediation.py` (allowlisted actions), `db.py` (python-oracledb thin connections). Reaches the standby as SYSDBA, and over SSH + `docker exec` for instance restarts. |
 | Monitor | `monitor/` | Poller, 6 checks, approved diagnostics, LLM recommendation, SQLite lifecycle (ACTIVE / RESOLVED), dashboard |
 | Header alert | `public/custom.js`, `public/custom.css` | Colours the Monitor link: green, amber, or solid red pulsing for an unacknowledged critical |
-| Ingest simulator | `scripts/ingest_simulator.py` | Demo load as schema `LOADGEN` |
-| Tracing | `opentelemetry-instrument` + `.env.otel` | Agent, MCP server and monitor send OTLP traces to Jaeger on the Docker host (UI :16686) |
-| Data Guard lab | `docker-stuff/00`–`03` | Builds the primary from a seed image and the standby with RMAN duplicate |
+| Load generator | `scripts/ingest_simulator.py` | Optional demo write load, in its own schema |
+| Tracing | `opentelemetry-instrument` + `.env.otel` | Agent, MCP server and monitor send OTLP traces to a collector such as Jaeger |
+| Lab setup | `docker-stuff/00`–`03` | Optional scripts that build a primary and standby in Docker for testing |
 
 ## Asking a question, then fixing the problem
 
@@ -81,7 +81,7 @@ sequenceDiagram
     actor U as DBA
     participant C as Chat UI
     participant A as Agent
-    participant L as gpt-5.4 via OpenWebUI
+    participant L as LLM
     participant M as MCP server
     participant O as oracle_core
     participant DB as Oracle primary / standby
@@ -126,8 +126,8 @@ MCP.
 sequenceDiagram
     participant P as Poller, every 15 s
     participant O as oracle_core
-    participant DB as ORCL primary
-    participant L as gpt-5.4
+    participant DB as Primary database
+    participant L as LLM
     participant S as monitor.db
     participant V as Dashboard + chat header
 
@@ -152,7 +152,7 @@ sequenceDiagram
 | Action | Target | Reversible | Runs through |
 | --- | --- | --- | --- |
 | `restart_redo_apply` | Standby | Yes | SYSDBA SQL |
-| `restart_standby_instance` | Standby | No | SQL*Plus in the standby container over SSH (thin mode cannot shut down or start an instance) |
+| `restart_standby_instance` | Standby | No | SQL*Plus on the standby host over SSH, since thin mode cannot shut down or start an instance (the current implementation runs it inside a Docker container) |
 | `enable_tablespace_autoextend` | Primary PDB tablespace | Yes | DDL in the PDB |
 | `add_tablespace_datafile` | Primary PDB tablespace | No | DDL in the PDB; the standby creates the file itself (`standby_file_management=AUTO`) |
 
