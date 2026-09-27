@@ -14,7 +14,7 @@
 (function () {
   "use strict";
 
-  var POLL_MS = 30000; // how often to ask the monitor API
+  var POLL_MS = 15000; // how often to ask the monitor API (= monitor poll)
   var FIND_MS = 300; // how often to look for the link at startup
   var LINK_SELECTOR = 'a[href="/monitor/"]';
   var CLASSES = ["mon-critical", "mon-warning", "mon-clear"];
@@ -72,7 +72,10 @@
             : warning > 0
               ? "mon-warning"
               : "mon-clear";
-        state.count = total > 0 ? String(total) : "";
+        // The badge counts what the colour means: criticals when there
+        // are any, otherwise warnings. The title carries both.
+        var shown = critical > 0 ? critical : warning;
+        state.count = shown > 0 ? String(shown) : "";
         state.title =
           total === 0
             ? "Monitor - no unacknowledged issues"

@@ -42,21 +42,27 @@ a[href="/monitor/"].mon-warning {
   background: rgba(224, 165, 54, 0.1) !important;
 }
 
-/* Criticals - red, pulsing. This is the state worth interrupting for. */
+/* Unacknowledged criticals - solid red, pulsing. This is the state worth
+   interrupting for, so it is filled rather than tinted: a faint outline
+   was too easy to read past. */
 a[href="/monitor/"].mon-critical {
-  color: #e0524a !important;
+  color: #ffffff !important;
   border-color: #e0524a !important;
-  background: rgba(224, 82, 74, 0.12) !important;
-  animation: mon-pulse 1.8s ease-in-out infinite;
+  background: #e0524a !important;
+  animation: mon-pulse 1.4s ease-in-out infinite;
+}
+
+a[href="/monitor/"].mon-critical:hover {
+  background: #e8716a !important;
 }
 
 @keyframes mon-pulse {
   0%,
   100% {
-    box-shadow: 0 0 0 rgba(224, 82, 74, 0);
+    box-shadow: 0 0 0 0 rgba(224, 82, 74, 0.7);
   }
   50% {
-    box-shadow: 0 0 14px rgba(224, 82, 74, 0.75);
+    box-shadow: 0 0 0 6px rgba(224, 82, 74, 0);
   }
 }
 
@@ -68,22 +74,35 @@ a[href="/monitor/"].mon-critical {
   }
 }
 
-/* Unacknowledged issue count, injected by custom.js as data-count. */
+/* Unacknowledged issue count, injected by custom.js as data-count:
+   criticals when there are any, otherwise warnings.
+   Colours are explicit per state. The badge used background:
+   currentColor next to its own dark color, so currentColor resolved to
+   that dark text colour and the badge rendered black on black. */
 a[href="/monitor/"][data-count]:not([data-count=""])::after {
   content: attr(data-count);
   position: absolute;
-  top: -6px;
-  right: -6px;
-  min-width: 17px;
-  height: 17px;
-  padding: 0 4px;
+  top: -7px;
+  right: -7px;
+  min-width: 18px;
+  height: 18px;
+  padding: 0 5px;
   border-radius: 9px;
-  background: currentColor;
-  color: #0b0f0d;
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
-  line-height: 17px;
+  line-height: 18px;
   text-align: center;
+  box-shadow: 0 0 0 2px var(--background, #1e1e1e);
+}
+
+a[href="/monitor/"].mon-critical[data-count]::after {
+  background: #ffffff;
+  color: #c0392b;
+}
+
+a[href="/monitor/"].mon-warning[data-count]::after {
+  background: #e0a536;
+  color: #1a1305;
 }
 
 /* --------------------------------------------------------------------
