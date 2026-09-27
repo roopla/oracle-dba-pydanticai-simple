@@ -62,7 +62,6 @@ from typing import Any, Callable
 import oracledb
 import paramiko
 
-from oracle_core.config import get_settings
 from oracle_core.db import execute_statements, query
 from oracle_core.queries import validate_pdb_name
 
@@ -747,7 +746,13 @@ def _tablespace_target(params: dict[str, Any]) -> tuple[str, str]:
 
 
 def _tablespace_files(pdb_name: str, tablespace: str) -> list[dict[str, Any]]:
-    """Datafiles of one PERMANENT tablespace, straight from the dictionary."""
+    """Datafiles of one PERMANENT tablespace, read inside the PDB itself.
+
+    Read through the PDB's own service and DBA_ views - the same place the
+    DDL runs - not CDB_DATA_FILES from the root. Read from the root right
+    after an AUTOEXTEND change, CDB_DATA_FILES still returned the old
+    values, so the post-run check reported a successful change as failed.
+    """
     rows = query(
         """
         SELECT df.file_id,
@@ -758,18 +763,14 @@ def _tablespace_files(pdb_name: str, tablespace: str) -> list[dict[str, Any]]:
                ts.contents,
                ts.bigfile,
                ts.block_size
-        FROM cdb_data_files df
-        JOIN v$containers c
-          ON c.con_id = df.con_id
-        JOIN cdb_tablespaces ts
-          ON ts.con_id = df.con_id
-         AND ts.tablespace_name = df.tablespace_name
-        WHERE UPPER(c.name) = :pdb_name
-          AND df.tablespace_name = :tablespace
+        FROM dba_data_files df
+        JOIN dba_tablespaces ts
+          ON ts.tablespace_name = df.tablespace_name
+        WHERE df.tablespace_name = :tablespace
         ORDER BY df.file_id
         """,
-        database_name=get_settings().oracle_cdb_name,
-        binds={"pdb_name": pdb_name, "tablespace": tablespace},
+        database_name=pdb_name,
+        binds={"tablespace": tablespace},
     )
 
     if not rows:
