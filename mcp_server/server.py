@@ -188,6 +188,13 @@ def get_tablespace_usage(
 ) -> list[dict[str, Any]]:
     """Return Oracle tablespace usage for all containers or one PDB.
 
+    Judge fullness by pct_used_of_max, which measures used space against
+    the size the datafiles can actually reach (MAXSIZE when autoextend is
+    on). pct_used is against the currently allocated size only: it is
+    routinely above 90% on healthy autoextensible tablespaces and must
+    not be reported as a capacity problem by itself. autoextensible is
+    YES when any datafile in the tablespace can grow.
+
     Args:
         pdb_name: Optional PDB name, such as ORCLPDB1 or ORCLPDB2.
             When supplied, the PDB is validated against the live database

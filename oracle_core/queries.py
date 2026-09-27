@@ -374,7 +374,20 @@ def get_wait_events(
 def get_tablespace_usage(
     pdb_name: str | None = None,
 ) -> list[dict[str, Any]]:
-    """Return tablespace usage for all containers or one validated PDB."""
+    """Return tablespace usage for all containers or one validated PDB.
+
+    Two percentages, because they answer different questions:
+
+    pct_used          used / currently ALLOCATED size. High on any
+                      autoextensible tablespace that has not grown yet,
+                      so on its own it is not a capacity signal.
+    pct_used_of_max   used / the size the files can actually reach:
+                      MAXSIZE for autoextensible files, current size
+                      otherwise. This is the one to alert on.
+
+    Neither accounts for free space on the filesystem underneath, so a
+    MAXSIZE larger than the disk is not caught here.
+    """
     settings = get_settings()
 
     validated_pdb_name = (
@@ -404,11 +417,29 @@ def get_tablespace_usage(
                ROUND(
                    (1 - NVL(fs.free_gb, 0) / NULLIF(df.bytes_gb, 0)) * 100,
                    2
-               ) AS pct_used
+               ) AS pct_used,
+               ROUND(df.max_gb, 2) AS max_gb,
+               ROUND(
+                   (df.bytes_gb - NVL(fs.free_gb, 0))
+                     / NULLIF(df.max_gb, 0) * 100,
+                   2
+               ) AS pct_used_of_max,
+               df.autoextensible
         FROM (
             SELECT con_id,
                    tablespace_name,
-                   SUM(bytes) / 1024 / 1024 / 1024 AS bytes_gb
+                   SUM(bytes) / 1024 / 1024 / 1024 AS bytes_gb,
+                   -- A file can be larger than its MAXSIZE after a manual
+                   -- resize, hence GREATEST.
+                   SUM(
+                       CASE
+                           WHEN autoextensible = 'YES'
+                           THEN GREATEST(maxbytes, bytes)
+                           ELSE bytes
+                       END
+                   ) / 1024 / 1024 / 1024 AS max_gb,
+                   -- 'YES' if any file in the tablespace can grow.
+                   MAX(autoextensible) AS autoextensible
             FROM cdb_data_files
             GROUP BY con_id, tablespace_name
         ) df

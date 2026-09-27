@@ -47,7 +47,13 @@ async def check_tablespace_usage() -> List[DetectedIssue]:
     ms = get_monitor_settings()
     issues: List[DetectedIssue] = []
     for row in await _run_shared(get_tablespace_usage):
-        pct = row.get("pct_used") or 0
+        # Alert on usage against what the files can grow to, not against
+        # what is currently allocated: an autoextensible tablespace sits
+        # near 100% of its allocation until it next extends, which is
+        # normal and not a capacity problem.
+        pct = row.get("pct_used_of_max")
+        if pct is None:
+            pct = row.get("pct_used") or 0
         if pct >= ms.monitor_tablespace_crit_pct:
             severity = Severity.CRITICAL
         elif pct >= ms.monitor_tablespace_warn_pct:
@@ -60,7 +66,8 @@ async def check_tablespace_usage() -> List[DetectedIssue]:
                 severity=severity,
                 summary=(
                     f"[{row['con_name']}] tablespace {row['tablespace_name']} "
-                    f"is {pct}% full"
+                    f"is {pct}% of its maximum size "
+                    f"({row.get('pct_used')}% of currently allocated)"
                 ),
                 details=row,
             )
