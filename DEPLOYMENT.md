@@ -22,6 +22,7 @@ one tool needs an Oracle licence option, and some fixes change the database.
 10. [Remediation actions: what to enable](#10-remediation-actions-what-to-enable)
 11. [Operations](#11-operations)
 12. [Troubleshooting](#12-troubleshooting)
+13. [Recreating the demo scenarios](#13-recreating-the-demo-scenarios)
 
 ## 1. Before you start
 
@@ -41,7 +42,8 @@ one tool needs an Oracle licence option, and some fixes change the database.
 
 Both are Python processes from the same repository and read the same
 `.env.mcp`. Optional pieces: an OTLP trace collector such as Jaeger, and
-the lab simulators in `scripts/` (never run those against production).
+the scenario scripts in `scripts/` for lab and test databases (section 13;
+never run those against production).
 
 State is one SQLite file, `monitor.db`, holding monitor incidents and the
 audit trail of approvals and rejections.
@@ -388,3 +390,13 @@ switch. Details of the partition action: [PARTITION_PRESSURE_DEMO.md](PARTITION_
 | Model list is empty, or the agent answers without tool steps | Endpoint or model | Check `OPENWEBUI_MODELS_URL`; use a model with tool calling |
 | Certificate errors to the LLM endpoint | Corporate CA | Set `SSL_CERT_FILE` |
 | Monitor link colour does not change after an upgrade | Browser cached the old script | `Ctrl+Shift+R` |
+
+## 13. Recreating the demo scenarios
+
+On a **lab or test** database you can recreate every scenario the agent
+was tested against - write load, blocking, long-running sessions, a full
+tablespace, partition pressure, a stopped standby, past activity for ASH -
+with `scripts/scenarios.py`, using only the `.env` files. It needs a
+`.env.loadgen` with `LAB_SCENARIOS_ENABLED=true` and a DBA login for setup
+(`SCENARIO_ADMIN_USER` / `_PASSWORD`). Step-by-step commands and the
+expected result of each scenario: [SCENARIOS.md](SCENARIOS.md).

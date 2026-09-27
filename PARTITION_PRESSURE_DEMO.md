@@ -7,6 +7,8 @@ next to the other tablespace fixes (autoextend, add a datafile).
 
 `scripts/partition_pressure_simulator.py` builds the situation in a lab
 database so you can watch the monitor raise it and the agent resolve it.
+The simplest way to run it is `scripts/scenarios.py partition-pressure`
+(see [SCENARIOS.md](SCENARIOS.md)), which runs the steps below for you.
 
 ## What the action does
 

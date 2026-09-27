@@ -35,7 +35,10 @@ Examples (run from the project root)
     uv run python scripts/ingest_simulator.py status
     uv run python scripts/ingest_simulator.py stop
 
-Linux/macOS only (uses POSIX signals and detached sessions).
+Background mode is for Linux/macOS (POSIX signals, detached sessions). On
+Windows use `start --foreground` and stop it with Ctrl+C or --duration;
+`status` is safe there, but `stop` terminates the process without a
+graceful shutdown (Oracle rolls back its open transactions).
 """
 
 from __future__ import annotations
@@ -141,8 +144,33 @@ def read_pid() -> int | None:
         return None
 
 
+def _windows_process_alive(pid: int) -> bool:
+    """Whether pid is a running process, without signalling it.
+
+    On Windows os.kill(pid, 0) is not a probe: it TERMINATES the process.
+    """
+    import ctypes
+
+    process_query_limited_information = 0x1000
+    still_active = 259
+    kernel32 = ctypes.windll.kernel32
+    handle = kernel32.OpenProcess(process_query_limited_information, False, pid)
+    if not handle:
+        return False
+    try:
+        code = ctypes.c_ulong()
+        if not kernel32.GetExitCodeProcess(handle, ctypes.byref(code)):
+            return False
+        return code.value == still_active
+    finally:
+        kernel32.CloseHandle(handle)
+
+
 def is_our_process(pid: int) -> bool:
     """True if pid is alive and is this simulator (guards against PID reuse)."""
+    if os.name == "nt":
+        # No command line to check here: trust a live PID, as on macOS.
+        return _windows_process_alive(pid)
     try:
         os.kill(pid, 0)
     except ProcessLookupError:

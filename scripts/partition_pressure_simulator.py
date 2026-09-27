@@ -23,8 +23,8 @@ Typical run
     sim_part fill --target-pct 97
     sim_part status
 
-Connections: DDL on the tablespace uses the DBA account from .env.mcp
-(ORACLE_USER); the table and its rows belong to LOADGEN (.env.loadgen).
+Connections: DDL on the tablespace uses SCENARIO_ADMIN_USER / _PASSWORD if
+set, else the account from .env.mcp (ORACLE_USER); the table and its rows belong to LOADGEN (.env.loadgen).
 Everything runs in the foreground, so it works the same on Windows.
 """
 
@@ -89,12 +89,13 @@ def identifier(value: str, what: str) -> str:
 
 
 def admin_connection(pdb: str) -> Any:
-    settings = get_settings()
-    return oracledb.connect(
-        user=settings.oracle_user,
-        password=settings.oracle_password.get_secret_value(),
-        dsn=build_dsn(pdb),
-    )
+    """DBA login for tablespace DDL: SCENARIO_ADMIN_* if set, else ORACLE_*."""
+    user = os.environ.get("SCENARIO_ADMIN_USER")
+    password = os.environ.get("SCENARIO_ADMIN_PASSWORD")
+    if not (user and password):
+        settings = get_settings()
+        user, password = settings.oracle_user, settings.oracle_password.get_secret_value()
+    return oracledb.connect(user=user, password=password, dsn=build_dsn(pdb))
 
 
 def loadgen_connection(pdb: str) -> Any:

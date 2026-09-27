@@ -108,6 +108,7 @@ The two ignored files query a live database and expect a PDB named
 | Document | Covers |
 | --- | --- |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Components, request and approval flow, monitor cycle, allowlisted changes |
+| [SCENARIOS.md](SCENARIOS.md) | Recreating every demo scenario in a lab or test database with `scripts/scenarios.py`, and what to expect from each |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Deploying to a new environment: prerequisites, Oracle account and grants, configuration reference, services, verification, security checklist |
 | [docker-stuff/README.md](docker-stuff/README.md) | Building the Data Guard lab: primary from a seed image, standby by RMAN duplicate (scripts `00`–`03`) |
 | [RUNBOOK.md](RUNBOOK.md) | Stopping, starting and verifying the stack. Written for an earlier lab setup, so its database and container names may not match yours. |
