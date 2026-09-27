@@ -11,28 +11,28 @@ changes it is allowed to make.
 flowchart TB
     user(["DBA / developer<br/>browser"])
 
-    subgraph web["Web app · uvicorn main:app :8000"]
-        direction LR
-        chat["Chainlit chat UI<br/>/chat"]
-        cards["Approval cards<br/>chat_actions.py"]
-        dash["Monitor dashboard<br/>/monitor"]
+    subgraph web["Web app process · uvicorn main:app :8000"]
+        direction TB
+        subgraph chatside["Chat"]
+            direction LR
+            chat["Chainlit chat UI<br/>/chat"]
+            agent["PydanticAI agent<br/>agent_app/agent.py"]
+            cards["Approval cards<br/>chat_actions.py"]
+        end
+        subgraph monitor["Monitor"]
+            direction LR
+            dash["Dashboard + API<br/>/monitor"]
+            poller["Poller · every 15 s<br/>6 checks + LLM recommendation"]
+            sqlite[("monitor.db<br/>incidents + audit")]
+        end
     end
 
-    subgraph brain["Agent"]
-        direction LR
-        agent["PydanticAI agent<br/>agent_app/agent.py"]
-        mcp["MCP server :9000<br/>read-only tools + propose"]
+    subgraph mcpproc["MCP server process · FastMCP :9000"]
+        mcp["MCP tools<br/>read-only + propose"]
     end
 
     llm["OpenWebUI :3000 · gpt-5.4<br/>on the Docker host"]
-
-    subgraph monitor["Monitor · runs inside the web app"]
-        direction LR
-        poller["Poller · every 15 s<br/>6 checks + LLM recommendation"]
-        sqlite[("monitor.db<br/>incidents + audit")]
-    end
-
-    core["oracle_core<br/>queries · remediation · db"]
+    core["oracle_core library<br/>loaded by both processes"]
 
     subgraph lab["Oracle 19c Data Guard · Docker host 192.168.56.30"]
         direction LR
@@ -45,9 +45,9 @@ flowchart TB
     user --> chat
     user --> dash
     chat -->|question| agent
-    agent -->|prompts| llm
-    agent -->|tool calls| mcp
-    mcp -->|read-only + plans| core
+    agent -->|tool calls over HTTP| mcp
+    llm <-->|prompts + answers| agent
+    mcp -->|read-only queries + plans| core
     chat -->|proposed plans| cards
     cards -->|after Approve| core
     cards -->|audit row| sqlite
@@ -64,9 +64,9 @@ flowchart TB
 | --- | --- | --- |
 | Chat UI | `chat.py`, mounted at `/chat` by `main.py` | Conversation, model picker, tool steps, action buttons |
 | Approval cards | `chat_actions.py` | Renders proposed fixes, runs them only after **Approve**, writes the audit row. Alternatives share a group; approving one withdraws the rest. |
-| Agent | `agent_app/agent.py` | PydanticAI agent with the DBA instructions; uses the MCP server as its only toolset |
-| MCP server | `mcp_server/server.py` | 15 tools: 12 read-only diagnostics (one reads the monitor's incidents), `list_remediation_actions`, and two `propose_*` tools that return plans and execute nothing |
-| Shared Oracle layer | `oracle_core/` | All SQL: `queries.py`, `queries_advanced.py` (ASH, Data Guard), `remediation.py` (allowlisted actions), `db.py` (python-oracledb thin connections). Reaches the standby as SYSDBA, and over SSH + `docker exec` for instance restarts. |
+| Agent | `agent_app/agent.py` | PydanticAI agent with the DBA instructions. Runs inside the web app process; its only toolset is the MCP server, reached over HTTP |
+| MCP server | `mcp_server/server.py`, its own process on :9000 | 15 tools: 12 read-only diagnostics (one reads the monitor's incidents), `list_remediation_actions`, and two `propose_*` tools that return plans and execute nothing |
+| Shared Oracle layer | `oracle_core/`, a library loaded by both processes | All SQL: `queries.py`, `queries_advanced.py` (ASH, Data Guard), `remediation.py` (allowlisted actions), `db.py` (python-oracledb thin connections). Reaches the standby as SYSDBA, and over SSH + `docker exec` for instance restarts. |
 | Monitor | `monitor/` | Poller, 6 checks, approved diagnostics, LLM recommendation, SQLite lifecycle (ACTIVE / RESOLVED), dashboard |
 | Header alert | `public/custom.js`, `public/custom.css` | Colours the Monitor link: green, amber, or solid red pulsing for an unacknowledged critical |
 | Ingest simulator | `scripts/ingest_simulator.py` | Demo load as schema `LOADGEN` |
