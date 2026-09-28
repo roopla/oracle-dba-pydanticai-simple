@@ -2,7 +2,8 @@
 
 How to install, configure, secure and verify the agent in a new
 environment. For what the parts are and how they talk to each other, see
-[ARCHITECTURE.md](ARCHITECTURE.md).
+[ARCHITECTURE.md](ARCHITECTURE.md). For a quick lab or test setup with
+the demo scenarios, see [QUICKSTART.md](QUICKSTART.md).
 
 **Read [Before you start](#1-before-you-start) first.** Three things in it
 decide whether this is safe to run where you are: the chat UI has no login,

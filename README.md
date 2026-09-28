@@ -19,7 +19,8 @@ known problems, but only after a human approves each change.
   audited.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for diagrams of the components and
-the main flows. To install it somewhere new, follow
+the main flows. To try it in a new lab or test environment, start with
+[QUICKSTART.md](QUICKSTART.md); for a full deployment, follow
 [DEPLOYMENT.md](DEPLOYMENT.md).
 
 ## Stack
@@ -107,6 +108,7 @@ The two ignored files query a live database and expect a PDB named
 
 | Document | Covers |
 | --- | --- |
+| [QUICKSTART.md](QUICKSTART.md) | Clone to a tested demo in a new lab or test environment: setup, smoke test, every scenario with its pass criteria |
 | [ARCHITECTURE.md](ARCHITECTURE.md) | Components, request and approval flow, monitor cycle, allowlisted changes |
 | [SCENARIOS.md](SCENARIOS.md) | Recreating every demo scenario in a lab or test database with `scripts/scenarios.py`, and what to expect from each |
 | [DEPLOYMENT.md](DEPLOYMENT.md) | Deploying to a new environment: prerequisites, Oracle account and grants, configuration reference, services, verification, security checklist |
