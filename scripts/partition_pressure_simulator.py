@@ -299,14 +299,17 @@ def cmd_cleanup(args: argparse.Namespace) -> int:
             if exc.args[0].code != 942:
                 raise
     with admin_connection(args.pdb) as admin, admin.cursor() as cursor:
-        try:
+        # Check first: a failed DROP TABLESPACE is written to the alert log
+        # (ORA-959), which the monitor would then report.
+        cursor.execute(
+            "SELECT COUNT(*) FROM dba_tablespaces WHERE tablespace_name = :t",
+            t=args.tablespace,
+        )
+        if cursor.fetchone()[0]:
             cursor.execute(
                 f"DROP TABLESPACE {args.tablespace} INCLUDING CONTENTS AND DATAFILES"
             )
             log(f"dropped tablespace {args.tablespace}")
-        except oracledb.DatabaseError as exc:
-            if exc.args[0].code != 959:
-                raise
     return 0
 
 

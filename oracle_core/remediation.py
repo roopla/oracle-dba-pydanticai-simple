@@ -140,6 +140,22 @@ class RemediationAction:
     # that deliberately adapt to state at run time (restart_redo_apply
     # decides then whether a CANCEL is needed).
     pin_statements: bool = False
+    # Returns why the action cannot run in this environment, or None when it
+    # can. Shown by list_actions() so the agent never offers it.
+    unavailable: Callable[[], str | None] = lambda: None
+
+
+def _missing(check: Callable[[], Any]) -> Callable[[], str | None]:
+    """Turn a configuration check that raises into an availability probe."""
+
+    def probe() -> str | None:
+        try:
+            check()
+        except RuntimeError as exc:
+            return str(exc)
+        return None
+
+    return probe
 
 
 # --------------------------------------------------------------------------
@@ -1182,6 +1198,7 @@ ACTIONS: dict[str, RemediationAction] = {
         reversible=True,
         planner=_plan_restart_redo_apply,
         executor=_execute_restart_redo_apply,
+        unavailable=_missing(lambda: _standby_credentials()),
     ),
     "restart_standby_instance": RemediationAction(
         name="restart_standby_instance",
@@ -1195,6 +1212,7 @@ ACTIONS: dict[str, RemediationAction] = {
         reversible=False,
         planner=_plan_restart_standby_instance,
         executor=_execute_restart_standby_instance,
+        unavailable=_missing(lambda: (_standby_credentials(), _standby_host())),
     ),
     "enable_tablespace_autoextend": RemediationAction(
         name="enable_tablespace_autoextend",
@@ -1250,15 +1268,20 @@ ACTIONS: dict[str, RemediationAction] = {
 
 
 def list_actions() -> list[dict[str, Any]]:
-    return [
-        {
+    actions = []
+    for a in ACTIONS.values():
+        reason = a.unavailable()
+        entry = {
             "action": a.name,
             "description": a.description,
             "reversible": a.reversible,
             "params": a.params_help,
+            "available": reason is None,
         }
-        for a in ACTIONS.values()
-    ]
+        if reason:
+            entry["unavailable_reason"] = reason
+        actions.append(entry)
+    return actions
 
 
 def _get_action(action: str) -> RemediationAction:

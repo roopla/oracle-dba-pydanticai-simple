@@ -455,7 +455,10 @@ def cmd_cleanup_all(args: argparse.Namespace) -> int:
             if execute(conn, f"DROP TABLE {user}.{table} PURGE", ignore=(942,)):
                 log(f"dropped {user}.{table}")
         for ts in (FULL_TABLESPACE, PARTITION_TABLESPACE):
-            if execute(conn, f"DROP TABLESPACE {ts} INCLUDING CONTENTS AND DATAFILES", ignore=(959,)):
+            # Check first: a failed DROP TABLESPACE is written to the alert
+            # log (ORA-959), which the monitor would then report.
+            if scalar(conn, "SELECT COUNT(*) FROM dba_tablespaces WHERE tablespace_name = :t", t=ts):
+                execute(conn, f"DROP TABLESPACE {ts} INCLUDING CONTENTS AND DATAFILES")
                 log(f"dropped tablespace {ts}")
         if args.drop_user and execute(conn, f"DROP USER {user} CASCADE", ignore=(1918,)):
             log(f"dropped user {user}")

@@ -354,6 +354,9 @@ def list_remediation_actions() -> list[dict[str, Any]]:
 
     Call this when the user asks what can be fixed automatically, or
     before proposing a remediation, to confirm the action exists.
+
+    An action with available=false cannot run in this environment (its
+    unavailable_reason says why). Say so if asked, and never propose it.
     """
     return query_remediation_actions()
 

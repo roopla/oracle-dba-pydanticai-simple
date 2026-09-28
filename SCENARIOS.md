@@ -80,7 +80,7 @@ condition clears.
 | Scenario | Command | Monitor raises | Ask the agent | Expected cards |
 | --- | --- | --- | --- | --- |
 | Tablespace full | `scen tablespace-full` | `TABLESPACE_USAGE` **CRITICAL** for `SCEN_FULL_TS` (a 32 MB fixed-size tablespace written until ORA-1653) and an alert-log error | *"SCEN_FULL_TS in <PDB> is full, how can we fix it?"* | **Option 1** enable autoextend (green), **Option 2** add a datafile (red). Approving one withdraws the other |
-| Partition pressure | `scen partition-pressure` | `TABLESPACE_USAGE` **CRITICAL** for `PART_DEMO_TS`: a monthly-partitioned table with twelve months of history, filled to 97% | *"PART_DEMO_TS in <PDB> is almost full, what can we do?"* | **Option 3** too: drop old partitions of `SALES_HISTORY`, keeping the current and previous month; marked as permanent data deletion. Approving it takes the tablespace from about 97% to about 25% |
+| Partition pressure | `scen partition-pressure` | `TABLESPACE_USAGE` **CRITICAL** for `PART_DEMO_TS`: a monthly-partitioned table with twelve months of history, filled to 97% | *"PART_DEMO_TS in <PDB> is almost full, what can we do?"* | **Option 3** too: drop old partitions of `SALES_HISTORY`, keeping the current and previous month; marked as permanent data deletion. Approving it takes the tablespace from about 97% to roughly 25-40% (the current month's partition, which is kept, holds the rows the fill wrote) |
 
 Running `partition-pressure` again only refills the current month; it does
 not add more history. Details: [PARTITION_PRESSURE_DEMO.md](PARTITION_PRESSURE_DEMO.md).

@@ -64,7 +64,7 @@ Then, with the web app running:
    `LOADGEN.SALES_HISTORY`, and says that option 3 deletes data.
 3. Approve option 3. The result shows the partitions and tablespace usage
    before and after; with twelve months of history, eleven partitions go
-   and the tablespace drops from about 97% to about 25%. The incident
+   and the tablespace drops from about 97% to roughly 25-40% (the current month's partition, which is kept, holds the rows the fill wrote). The incident
    resolves on the next poll.
 
 To look without proposing anything, ask *"Which partitioned tables in

@@ -130,19 +130,37 @@ SQL_STANDBY_REDO = """
 # would report a gap equal to the latest sequence. The role filter makes
 # it return no rows there; the primary's view of transport gaps is
 # gap_status in v$archive_dest_status.
+#
+# "Applied" is the higher of two readings. APPLIED in v$archived_log lags:
+# logs received while apply was stopped stay 'NO' (or 'IN-MEMORY') until a
+# checkpoint after the next log switch, even though a restarted MRP0 has
+# already applied them - so a recovered standby kept reporting its old gap.
+# MRP0 applies in order, so the log before the one it is working on is
+# applied.
 SQL_SEQUENCE_GAP = """
     SELECT
-        thread#                                           AS thread_num,
-        MAX(sequence#)                                    AS last_received_seq,
-        MAX(CASE WHEN applied = 'YES' THEN sequence# END) AS last_applied_seq,
-        MAX(sequence#)
-          - NVL(MAX(CASE WHEN applied = 'YES' THEN sequence# END), 0)
-                                                          AS sequence_gap
-    FROM v$archived_log
-    WHERE resetlogs_change# = (SELECT resetlogs_change# FROM v$database)
-      AND (SELECT database_role FROM v$database) = 'PHYSICAL STANDBY'
-    GROUP BY thread#
-    ORDER BY thread#
+        thread_num,
+        last_received_seq,
+        last_applied_seq,
+        GREATEST(last_received_seq - last_applied_seq, 0) AS sequence_gap
+    FROM (
+        SELECT
+            al.thread#     AS thread_num,
+            MAX(al.sequence#) AS last_received_seq,
+            GREATEST(
+                NVL(MAX(CASE WHEN al.applied IN ('YES', 'IN-MEMORY')
+                             THEN al.sequence# END), 0),
+                NVL((SELECT MAX(m.sequence#) - 1
+                     FROM v$managed_standby m
+                     WHERE m.process LIKE 'MRP%'
+                       AND m.thread# = al.thread#), 0)
+            ) AS last_applied_seq
+        FROM v$archived_log al
+        WHERE al.resetlogs_change# = (SELECT resetlogs_change# FROM v$database)
+          AND (SELECT database_role FROM v$database) = 'PHYSICAL STANDBY'
+        GROUP BY al.thread#
+    )
+    ORDER BY thread_num
 """
 
 
@@ -280,7 +298,16 @@ def get_ash_activity(
 
     validated_pdb_name = _validated_pdb(pdb_name)
 
-    window = "sample_time >= SYSTIMESTAMP - NUMTODSINTERVAL(:minutes, 'MINUTE')"
+    # sample_time is a plain TIMESTAMP in the database server's clock.
+    # Comparing it with SYSTIMESTAMP (WITH TIME ZONE) makes Oracle convert
+    # it using the SESSION time zone - the client's - which shifts the
+    # window by the client/server offset: "last 10 minutes" from a client
+    # 4 hours behind UTC read 4h10m of ASH. Compare on the server's clock
+    # without a time zone instead.
+    window = (
+        "sample_time >= CAST(SYSTIMESTAMP AS TIMESTAMP) "
+        "- NUMTODSINTERVAL(:minutes, 'MINUTE')"
+    )
 
     if grouping == "WAIT_CLASS":
         select_sql = f"""
