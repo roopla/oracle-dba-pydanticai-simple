@@ -439,6 +439,9 @@ def cmd_history_burst(args: argparse.Namespace) -> int:
         "--mode", "burst", "--workers", "8", "--burst-seconds", "45",
         "--pause-seconds", "60", "--duration", str(args.minutes * 60),
     )
+    if status:
+        log("the burst did not run (see the message above), so there is no new history to ask about")
+        return status
     log(f"done. Ask the agent: 'What was the database waiting on in the last {args.minutes + 5} minutes?'")
     return status
 
